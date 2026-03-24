@@ -1,0 +1,55 @@
+name: Weekly Benchmarks
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 2am UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  benchmark:
+    name: Run ClawMemory benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build ClawMemory server
+        run: go build -o clawmemory ./cmd/clawmemory
+
+      - name: Start ClawMemory server
+        run: |
+          mkdir -p ~/.clawmemory
+          ./clawmemory serve --port 7437 &
+          sleep 3
+          curl -f http://127.0.0.1:7437/health || (echo "Server failed to start" && exit 1)
+        env:
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+
+      - name: Build benchmark runner
+        run: go build -o bench-runner ./bench/runner.go
+
+      - name: Run all benchmarks
+        run: |
+          ./bench-runner \
+            --server http://127.0.0.1:7437 \
+            --suite all \
+            --output bench-report.md
+
+      - name: Display benchmark report
+        run: cat bench-report.md
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-${{ github.run_number }}
+          path: bench-report.md
+
+      - name: Comment benchmark results on latest commit
+        uses: peter-evans/commit-comment@v3
+        if: github.event_name == 'schedule'
+        with:
+          body-path: bench-report.md

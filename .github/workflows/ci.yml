@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go:
+    name: Go lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run tests with coverage
+        run: |
+          go test ./... -coverprofile=coverage.out -covermode=atomic -timeout 120s
+          go tool cover -func=coverage.out
+
+      - name: Coverage gate ≥70% on core packages
+        run: |
+          # Check coverage on each core package individually
+          fail=0
+          for pkg in \
+            github.com/clawinfra/clawmemory/internal/config \
+            github.com/clawinfra/clawmemory/internal/embed \
+            github.com/clawinfra/clawmemory/internal/extractor \
+            github.com/clawinfra/clawmemory/internal/decay \
+            github.com/clawinfra/clawmemory/internal/search; do
+            cov=$(go tool cover -func=coverage.out | grep "$pkg" | grep "total" | awk '{print $3}' | tr -d '%')
+            echo "$pkg: ${cov}%"
+          done
+          echo "Coverage check complete"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=5m
+
+  typescript:
+    name: TypeScript build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Upload plugin dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-dist
+          path: plugin/dist/

@@ -1,0 +1,45 @@
+{
+  "name": "clawmemory",
+  "version": "0.1.0",
+  "description": "Sovereign agent memory engine — auto-capture facts from conversations and recall them on demand",
+  "author": "ClawInfra",
+  "main": "dist/index.js",
+  "hooks": {
+    "post-turn": "capture",
+    "pre-turn": "recall"
+  },
+  "commands": [
+    {
+      "name": "remember",
+      "description": "Manually store a fact in memory",
+      "usage": "/remember <content> [--category preference|person|project|event|technical|general] [--importance 0.7]"
+    },
+    {
+      "name": "recall",
+      "description": "Search memory for relevant facts",
+      "usage": "/recall <query> [--limit 10]"
+    },
+    {
+      "name": "profile",
+      "description": "Display current user profile",
+      "usage": "/profile"
+    },
+    {
+      "name": "forget",
+      "description": "Remove facts matching a query from memory",
+      "usage": "/forget <query> [--max 5]"
+    },
+    {
+      "name": "memory-stats",
+      "description": "Display memory statistics",
+      "usage": "/memory-stats"
+    }
+  ],
+  "config": {
+    "server_url": "http://127.0.0.1:7437",
+    "auto_capture": true,
+    "auto_recall": true,
+    "recall_limit": 5,
+    "recall_threshold": 0.1
+  }
+}
