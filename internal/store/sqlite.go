@@ -363,8 +363,20 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([
 	if limit <= 0 {
 		limit = 10
 	}
+
+	// Try AND logic first (FTS5 default — all terms must appear), then fall back
+	// to OR logic for broader recall if AND returns no results.
+	// Quoted phrases (e.g. `"dark mode"`) are left unchanged.
+	ftsQuery := query
+	orFallback := ""
+	if !strings.HasPrefix(query, "\"") {
+		words := strings.Fields(query)
+		if len(words) > 1 {
+			orFallback = strings.Join(words, " OR ")
+		}
+	}
+
 	// Use FTS5 via rowid match — query the virtual table and join back to facts
-	// The correct FTS5 approach: query facts_fts, use rowid to join to facts
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.id, f.content, f.category, f.container, f.importance, f.confidence, f.source,
 		        f.created_at, f.updated_at, f.expires_at, f.superseded_by, f.embedding, f.deleted
@@ -375,12 +387,36 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([
 		 AND f.deleted=0 AND f.superseded_by IS NULL
 		 ORDER BY f.importance DESC
 		 LIMIT ?`,
-		query, limit)
+		ftsQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
 	defer rows.Close()
-	return scanFacts(rows)
+	results, err := scanFacts(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// If AND logic returned no results and we have an OR fallback, try OR
+	if len(results) == 0 && orFallback != "" {
+		orRows, orErr := s.db.QueryContext(ctx,
+			`SELECT f.id, f.content, f.category, f.container, f.importance, f.confidence, f.source,
+			        f.created_at, f.updated_at, f.expires_at, f.superseded_by, f.embedding, f.deleted
+			 FROM facts f
+			 WHERE f.rowid IN (
+			     SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?
+			 )
+			 AND f.deleted=0 AND f.superseded_by IS NULL
+			 ORDER BY f.importance DESC
+			 LIMIT ?`,
+			orFallback, limit)
+		if orErr == nil {
+			defer orRows.Close()
+			results, _ = scanFacts(orRows)
+		}
+	}
+
+	return results, nil
 }
 
 // SearchVector performs brute-force cosine similarity search over stored embeddings.

@@ -67,10 +67,19 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 		opts.Limit = 10
 	}
 
-	// Fetch more results from each source to fuse well
+	// Fetch more results from each source to fuse well.
+	// When container filtering is requested, we need a larger candidate pool
+	// since we filter AFTER RRF fusion (store-level queries don't filter by container).
 	fetchLimit := opts.Limit * 3
 	if fetchLimit < 20 {
 		fetchLimit = 20
+	}
+	if opts.Container != "" {
+		// Increase fetch limit to ensure container-specific facts appear in candidates
+		fetchLimit = opts.Limit * 20
+		if fetchLimit < 200 {
+			fetchLimit = 200
+		}
 	}
 
 	// 1. BM25 search
@@ -90,19 +99,16 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 		// If embedder fails, gracefully degrade to BM25-only
 	}
 
+	// 2.5. Pre-filter by container BEFORE RRF fusion.
+	// This ensures RRF ranks are computed within the container scope,
+	// preventing cross-container facts from dominating the rankings.
+	if opts.Container != "" {
+		bm25Facts = filterFactsByContainer(bm25Facts, opts.Container)
+		vecFacts = filterFactsByContainer(vecFacts, opts.Container)
+	}
+
 	// 3. Reciprocal Rank Fusion
 	results := reciprocalRankFusion(bm25Facts, vecFacts, s.bm25Weight, s.vecWeight)
-
-	// 4. Filter by container
-	if opts.Container != "" {
-		filtered := results[:0]
-		for _, r := range results {
-			if r.Container == opts.Container {
-				filtered = append(filtered, r)
-			}
-		}
-		results = filtered
-	}
 
 	// 5. Filter by threshold
 	if opts.Threshold > 0 {
@@ -198,6 +204,20 @@ func reciprocalRankFusion(bm25Facts, vecFacts []*store.FactRecord, bm25W, vecW f
 		})
 	}
 	return results
+}
+
+// filterFactsByContainer returns only facts matching the given container.
+func filterFactsByContainer(facts []*store.FactRecord, container string) []*store.FactRecord {
+	if container == "" || len(facts) == 0 {
+		return facts
+	}
+	filtered := make([]*store.FactRecord, 0, len(facts)/2)
+	for _, f := range facts {
+		if f.Container == container {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
 }
 
 // BM25Only searches using only BM25 (keyword) search.

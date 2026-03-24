@@ -11,10 +11,67 @@ import (
 	libsql "github.com/tursodatabase/go-libsql"
 )
 
+// tursoConnector abstracts the libsql connector for testability.
+type tursoConnector interface {
+	Sync() (libsql.Replicated, error)
+	Close() error
+}
+
+// TursoConnector is the exported interface for the libsql connector.
+// This allows tests and external packages to mock the connector.
+type TursoConnector interface {
+	Sync() (interface{}, error)
+	Close() error
+}
+
+// libsqlConnectorAdapter wraps a real libsql.Connector to implement TursoConnector.
+type libsqlConnectorAdapter struct {
+	c *libsql.Connector
+}
+
+func (a *libsqlConnectorAdapter) Sync() (interface{}, error) {
+	return a.c.Sync()
+}
+
+func (a *libsqlConnectorAdapter) Close() error {
+	return a.c.Close()
+}
+
+// mockableTursoConnector wraps TursoConnector to implement the internal tursoConnector.
+type mockableTursoConnector struct {
+	tc TursoConnector
+}
+
+func (m *mockableTursoConnector) Sync() (libsql.Replicated, error) {
+	_, err := m.tc.Sync()
+	return libsql.Replicated{}, err
+}
+
+func (m *mockableTursoConnector) Close() error {
+	return m.tc.Close()
+}
+
+// NewTursoSyncFromConnector creates a TursoSync from an external connector.
+// db may be nil — a no-op *sql.DB will be used instead.
+// This is primarily for testing.
+func NewTursoSyncFromConnector(tc TursoConnector, db *sql.DB, interval time.Duration) *TursoSync {
+	if db == nil {
+		// Use a no-op in-memory DB for testing
+		db, _ = sql.Open("libsql", "file::memory:?cache=shared")
+	}
+	return &TursoSync{
+		connector: &mockableTursoConnector{tc: tc},
+		localDB:   db,
+		interval:  interval,
+		stopCh:    make(chan struct{}),
+		stopped:   make(chan struct{}),
+	}
+}
+
 // TursoSync manages background sync between local SQLite and Turso cloud.
 // It uses go-libsql's embedded replica connector for automatic sync.
 type TursoSync struct {
-	connector *libsql.Connector
+	connector tursoConnector
 	localDB   *sql.DB
 	interval  time.Duration
 	mu        sync.Mutex

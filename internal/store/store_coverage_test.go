@@ -643,6 +643,72 @@ func TestSearchVector_SkipsNoEmbedding(t *testing.T) {
 	}
 }
 
+// ─── FTS5 OR fallback ─────────────────────────────────────────────────────────
+
+func TestSearchFTS_ORFallback(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert facts with distinct words
+	s.InsertFact(ctx, &FactRecord{
+		ID: "or-1", Content: "alpha factor", Category: "general", Container: "general",
+		Importance: 0.7, Confidence: 1.0, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	})
+	s.InsertFact(ctx, &FactRecord{
+		ID: "or-2", Content: "beta gamma", Category: "general", Container: "general",
+		Importance: 0.7, Confidence: 1.0, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	})
+
+	// AND query: "alpha beta" → no document has both → 0 results from AND
+	// OR fallback: "alpha OR beta" → finds both documents
+	results, err := s.SearchFTS(ctx, "alpha beta", 10)
+	if err != nil {
+		t.Fatalf("SearchFTS OR fallback: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected OR fallback to return results for multi-word query")
+	}
+}
+
+func TestSearchFTS_ANDPriority(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert fact containing both words
+	s.InsertFact(ctx, &FactRecord{
+		ID: "and-1", Content: "hello world greeting", Category: "general", Container: "general",
+		Importance: 0.7, Confidence: 1.0, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	})
+
+	// AND query: "hello world" → fact has both → AND succeeds
+	results, err := s.SearchFTS(ctx, "hello world", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result from AND match, got %d", len(results))
+	}
+}
+
+func TestSearchFTS_QuotedPhrase(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.InsertFact(ctx, &FactRecord{
+		ID: "q-1", Content: "dark mode interface", Category: "general", Container: "general",
+		Importance: 0.7, Confidence: 1.0, CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	})
+
+	// Quoted phrase should use exact FTS5 phrase match (no OR fallback)
+	results, err := s.SearchFTS(ctx, `"dark mode"`, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 {
+		t.Error("expected phrase match result")
+	}
+}
+
 // ─── ListFacts scanFacts error via rows.Err ───────────────────────────────────
 
 func TestListFacts_MultipleCombined(t *testing.T) {

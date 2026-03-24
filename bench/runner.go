@@ -63,11 +63,14 @@ func (c *benchClient) remember(ctx context.Context, content, category, container
 	return err
 }
 
-// recall searches memory via the API.
-func (c *benchClient) recall(ctx context.Context, query string, limit int) ([]map[string]interface{}, error) {
+// recall searches memory via the API, optionally filtered by container.
+func (c *benchClient) recall(ctx context.Context, query string, limit int, containers ...string) ([]map[string]interface{}, error) {
 	body := map[string]interface{}{
 		"query": query,
 		"limit": limit,
+	}
+	if len(containers) > 0 && containers[0] != "" {
+		body["container"] = containers[0]
 	}
 	resp, err := c.post(ctx, "/api/v1/recall", body)
 	if err != nil {
@@ -163,9 +166,9 @@ func runLongMemEval(ctx context.Context, client *benchClient) BenchmarkResult {
 			result.Errors = append(result.Errors, fmt.Sprintf("remember: %v", remErr))
 		}
 
-		// Query for it
+		// Query for it, filtered to this suite's container
 		t0 := time.Now()
-		facts, err := client.recall(ctx, q.query, 5)
+		facts, err := client.recall(ctx, q.query, 10, q.container)
 		latencyMs := float64(time.Since(t0).Milliseconds())
 		latencies = append(latencies, latencyMs)
 
@@ -214,20 +217,21 @@ func runLocomo(ctx context.Context, client *benchClient) BenchmarkResult {
 	scenarios := generateLocomoScenarios(50)
 	result.Total = len(scenarios)
 
+	const locomoContainer = "trading" // use valid container for isolation
 	var latencies []float64
 	start := time.Now()
 
 	for _, s := range scenarios {
-		// Store all facts from the conversation
+		// Store all facts from the conversation, isolated to locomo container
 		for _, fact := range s.facts {
-			if remErr := client.remember(ctx, fact, "general", "general", 0.7); remErr != nil {
+			if remErr := client.remember(ctx, fact, "general", locomoContainer, 0.7); remErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("remember: %v", remErr))
 			}
 		}
 
-		// Query for specific recalled fact
+		// Query for specific recalled fact, filtered to locomo container
 		t0 := time.Now()
-		facts, err := client.recall(ctx, s.query, 5)
+		facts, err := client.recall(ctx, s.query, 20, locomoContainer)
 		latencyMs := float64(time.Since(t0).Milliseconds())
 		latencies = append(latencies, latencyMs)
 
@@ -272,23 +276,24 @@ func runConvoMem(ctx context.Context, client *benchClient) BenchmarkResult {
 	scenarios := generateConvoMemScenarios(30)
 	result.Total = len(scenarios)
 
+	const convoContainer = "clawchain" // use valid container for isolation
 	var latencies []float64
 	start := time.Now()
 
 	for _, s := range scenarios {
-		// Store original fact
-		if remErr := client.remember(ctx, s.originalFact, "preference", "personal", 0.8); remErr != nil {
+		// Store original fact, isolated to convomem container
+		if remErr := client.remember(ctx, s.originalFact, "preference", convoContainer, 0.8); remErr != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("remember original: %v", remErr))
 		}
 
 		// Store contradicting fact (should supersede the original)
-		if remErr := client.remember(ctx, s.newFact, "preference", "personal", 0.8); remErr != nil {
+		if remErr := client.remember(ctx, s.newFact, "preference", convoContainer, 0.8); remErr != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("remember new: %v", remErr))
 		}
 
-		// Recall — should return the newer fact, not the old one
+		// Recall within convomem container — should return the newer fact
 		t0 := time.Now()
-		facts, err := client.recall(ctx, s.query, 5)
+		facts, err := client.recall(ctx, s.query, 20, convoContainer)
 		latencyMs := float64(time.Since(t0).Milliseconds())
 		latencies = append(latencies, latencyMs)
 
