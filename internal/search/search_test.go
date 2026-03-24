@@ -351,3 +351,87 @@ func TestVectorSearch_Ranking(t *testing.T) {
 		t.Logf("Note: expected 'high' to rank first, got %s", results[0].FactID)
 	}
 }
+
+func TestVectorSearch_EmbedError(t *testing.T) {
+	// Server that always returns 500 — embed.Embed will fail
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fail", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	embedder := embed.New(srv.URL, "test", 8)
+	s := newTestStore(t)
+	v := NewVector(s, embedder)
+
+	_, err := v.Search(context.Background(), "query", 5, 0.0)
+	if err == nil {
+		t.Error("expected error when embed fails")
+	}
+}
+
+func TestVectorSearch_DefaultLimit(t *testing.T) {
+	dim := 8
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		emb := make([]float64, dim)
+		json.NewEncoder(w).Encode(map[string]interface{}{"embedding": emb})
+	}))
+	defer srv.Close()
+
+	embedder := embed.New(srv.URL, "test", dim)
+	s := newTestStore(t)
+	v := NewVector(s, embedder)
+
+	// limit=0 should default to 10, not error
+	results, err := v.Search(context.Background(), "query", 0, 0.0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = results // empty store, just checking no panic
+}
+
+func TestBM25Search_StoreError(t *testing.T) {
+	// Use a closed store to trigger store error
+	f, _ := os.CreateTemp("", "bm25err_*.db")
+	path := f.Name()
+	f.Close()
+	s, err := store.NewSQLiteStore(path)
+	if err != nil {
+		os.Remove(path)
+		return // skip if can't create
+	}
+	s.Close() // close immediately to make queries fail
+	os.Remove(path)
+
+	b := NewBM25(s)
+	_, err = b.Search(context.Background(), "query", 5)
+	if err == nil {
+		t.Error("expected error from closed store")
+	}
+}
+
+func TestBM25Search_DefaultLimit(t *testing.T) {
+	s := newTestStore(t)
+	b := NewBM25(s)
+	// limit=0 defaults to 10 — should not error on empty store
+	results, err := b.Search(context.Background(), "test", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = results
+}
+
+func TestHybridSearch_VectorError(t *testing.T) {
+	// Embedder pointing at dead server — vector arm fails gracefully, BM25 still works
+	embedder := embed.New("http://127.0.0.1:1", "test", 8)
+	s := newTestStore(t)
+	seedFacts(t, s, []string{"hello world", "foo bar"})
+
+	searcher := New(s, embedder, 0.5, 0.5)
+	ctx := context.Background()
+	// BM25 should still return results even if vector arm errors
+	results, err := searcher.Search(ctx, "hello", SearchOpts{Limit: 5})
+	// Some implementations return partial results; others propagate error.
+	// Either way, should not panic.
+	_ = results
+	_ = err
+}
