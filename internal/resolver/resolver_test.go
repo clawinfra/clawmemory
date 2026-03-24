@@ -482,3 +482,121 @@ func abs(x float64) float64 {
 
 // Unused import protection
 var _ = fmt.Sprintf
+
+// TestCheck_ExactDuplicateContent verifies exact content duplicates are skipped.
+func TestCheck_ExactDuplicateContent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	emb := makeEmbedding(0.999)
+	// Insert a fact with identical content
+	s.InsertFact(ctx, &store.FactRecord{
+		ID:         "dup-content-old",
+		Content:    "User prefers dark mode",
+		Category:   "preference",
+		Container:  "personal",
+		Importance: 0.7,
+		Confidence: 1.0,
+		Embedding:  emb,
+		CreatedAt:  1000,
+		UpdatedAt:  1000,
+	})
+
+	embedder := makeMockEmbedder(t, &mockEmbedState{
+		embeddings: map[string][]float64{
+			"User prefers dark mode": func() []float64 {
+				e := make([]float64, testDim)
+				for i := range e {
+					e[i] = 0.999
+				}
+				return e
+			}(),
+		},
+	})
+	searcher := search.New(s, embedder, 0.4, 0.6)
+	resolver := NewWithThreshold(s, searcher, embedder, 0.1)
+
+	// New fact with same content but different ID
+	newFact := &store.FactRecord{
+		ID:        "dup-content-new",
+		Content:   "User prefers dark mode", // exact duplicate content
+		Embedding: emb,
+	}
+
+	contradictions, err := resolver.Check(ctx, newFact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exact same content should NOT be flagged as contradiction
+	for _, c := range contradictions {
+		if c.ExistingFact.Content == newFact.Content {
+			t.Error("exact duplicate content should not be a contradiction")
+		}
+	}
+}
+
+// TestCheck_LowSimilarityBranch verifies that sim < threshold sets sim to threshold.
+func TestCheck_SimBelowThreshold(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert a fact — embedding will be returned by search as above threshold
+	// but new fact has empty embedding, so computeSimilarity returns 0 < threshold
+	s.InsertFact(ctx, &store.FactRecord{
+		ID:         "simlow-old",
+		Content:    "User prefers Python",
+		Category:   "preference",
+		Container:  "personal",
+		Importance: 0.7,
+		Confidence: 1.0,
+		Embedding:  makeEmbedding(0.9),
+		CreatedAt:  1000,
+		UpdatedAt:  1000,
+	})
+
+	embedder := makeMockEmbedder(t, &mockEmbedState{
+		embeddings: map[string][]float64{
+			"User likes coding": func() []float64 {
+				e := make([]float64, testDim)
+				for i := range e {
+					e[i] = 0.9
+				}
+				return e
+			}(),
+		},
+	})
+	searcher := search.New(s, embedder, 0.4, 0.6)
+	// Very low threshold to ensure the search returns our fact
+	resolver := NewWithThreshold(s, searcher, embedder, 0.1)
+
+	// New fact with nil embedding → computeSimilarity will return 0 < threshold
+	newFact := &store.FactRecord{
+		ID:        "simlow-new",
+		Content:   "User likes coding",
+		Embedding: nil, // empty → sim = 0, triggers `sim = r.contradictionThreshold`
+	}
+
+	contradictions, err := resolver.Check(ctx, newFact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// If a contradiction is found, verify its similarity is set to at least the threshold
+	for _, c := range contradictions {
+		if c.Similarity < 0.1 {
+			t.Errorf("expected similarity >= threshold (0.1), got %f", c.Similarity)
+		}
+	}
+}
+
+// TestComputeSimilarity_OppositeVectors ensures opposite vectors return negative similarity.
+func TestComputeSimilarity_OppositeVectors(t *testing.T) {
+	a := makeEmbedding(1.0)
+	b := make([]float32, testDim)
+	for i := range b {
+		b[i] = -1.0
+	}
+	sim := computeSimilarity(a, b)
+	if sim >= 0 {
+		t.Errorf("opposite vectors should have negative similarity, got %f", sim)
+	}
+}

@@ -38,9 +38,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	// Note: PRAGMA journal_mode=WAL returns a row, use QueryRow instead of Exec
 	var journalMode string
 	if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&journalMode); err != nil {
-		// Not fatal — some libsql configurations don't support WAL pragma via QueryRow
-		// Just log and continue
-		_ = err
+		// Not fatal — some libsql configurations (e.g. Turso) don't support WAL pragma.
+		// Intentionally ignored: WAL mode is a performance optimisation, not a correctness requirement.
+		journalMode = "unknown"
+		_ = journalMode // suppress unused warning
+		_ = err         //nolint:errcheck // graceful degradation
 	}
 
 	// Enable foreign keys

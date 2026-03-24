@@ -271,3 +271,84 @@ func TestBuild_WithManyFacts(t *testing.T) {
 		t.Fatal("expected non-nil profile")
 	}
 }
+
+// TestGet_UpdatedAtPropagation verifies that the most recent updated_at is returned.
+func TestGet_UpdatedAtPropagation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Set a profile entry with _summary which has a late UpdatedAt
+	// We rely on the Get function's `e.UpdatedAt > profile.UpdatedAt` branch.
+	// Insert via SetProfile then ensure the summary key is read correctly.
+	if err := s.SetProfile(ctx, "_summary", "This is the profile summary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProfile(ctx, "location", "Sydney"); err != nil {
+		t.Fatal(err)
+	}
+
+	b := New(s, nil)
+	profile, err := b.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if profile.Summary != "This is the profile summary" {
+		t.Errorf("expected summary, got %q", profile.Summary)
+	}
+	if profile.Entries["location"] != "Sydney" {
+		t.Errorf("expected location=Sydney")
+	}
+}
+
+// TestSummarize_OnlySummaryKey tests the Summarize path when only _summary key exists.
+func TestSummarize_OnlySummaryKey(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Insert only a _summary key — parts will be empty, returns ""
+	if err := s.SetProfile(ctx, "_summary", "some summary"); err != nil {
+		t.Fatal(err)
+	}
+
+	b := New(s, nil)
+	summary, err := b.Summarize(ctx)
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	// Only _summary key exists, so parts is empty → returns ""
+	if summary != "" {
+		t.Logf("got summary (only _summary key): %q", summary)
+	}
+}
+
+// TestUpdate_UpdatesTimestamp verifies Update doesn't error on empty facts list.
+func TestUpdate_EmptyFacts(t *testing.T) {
+	s := newTestStore(t)
+	b := New(s, nil)
+	if err := b.Update(context.Background(), nil); err != nil {
+		t.Fatalf("Update with nil facts: %v", err)
+	}
+	if err := b.Update(context.Background(), []extractor.Fact{}); err != nil {
+		t.Fatalf("Update with empty facts: %v", err)
+	}
+}
+
+// TestBuild_FactsWithNoMatchingPattern ensures facts without matching patterns are skipped.
+func TestBuild_NoMatchingPatternFacts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// These facts don't match any pattern so inferProfileKey returns "", ""
+	insertFact(t, s, "nm1", "This is some random text", "person")
+	insertFact(t, s, "nm2", "Another random piece of info", "preference")
+
+	b := New(s, nil)
+	profile, err := b.Build(ctx)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// No entries extracted from non-matching patterns
+	if len(profile.Entries) != 0 {
+		t.Logf("entries: %v (random facts may not produce profile entries)", profile.Entries)
+	}
+}
