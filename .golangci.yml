@@ -11,8 +11,9 @@ linters:
     - unused
     - ineffassign
 
-issues:
-  exclude-rules:
-    # Allow staticcheck nil-pointer warnings where we use t.Fatal
-    - linters: [staticcheck]
-      text: "SA5011"
+linters-settings:
+  exclusions:
+    rules:
+      # Allow staticcheck nil-pointer warnings where we use t.Fatal
+      - linters: [staticcheck]
+        text: "SA5011"
