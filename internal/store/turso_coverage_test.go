@@ -14,7 +14,6 @@ import (
 	"time"
 
 	libsql "github.com/tursodatabase/go-libsql"
-	_ "github.com/tursodatabase/go-libsql"
 )
 
 // ─── Mock connector ───────────────────────────────────────────────────────────

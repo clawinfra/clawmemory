@@ -24,19 +24,6 @@ type TursoConnector interface {
 	Close() error
 }
 
-// libsqlConnectorAdapter wraps a real libsql.Connector to implement TursoConnector.
-type libsqlConnectorAdapter struct {
-	c *libsql.Connector
-}
-
-func (a *libsqlConnectorAdapter) Sync() (interface{}, error) {
-	return a.c.Sync()
-}
-
-func (a *libsqlConnectorAdapter) Close() error {
-	return a.c.Close()
-}
-
 // mockableTursoConnector wraps TursoConnector to implement the internal tursoConnector.
 type mockableTursoConnector struct {
 	tc TursoConnector
