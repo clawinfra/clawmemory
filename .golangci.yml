@@ -10,8 +10,6 @@ linters:
     - staticcheck
     - unused
     - ineffassign
-
-linters-settings:
   exclusions:
     rules:
       # Allow staticcheck nil-pointer warnings where we use t.Fatal
