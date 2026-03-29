@@ -1,6 +1,6 @@
 // Package extractor provides LLM-based fact extraction from conversation turns.
-// It uses GLM-4.7 via an OpenAI-compatible HTTP proxy to identify and classify
-// facts worth remembering from raw conversation text.
+// It supports both OpenAI-compatible (/v1/chat/completions) and Anthropic-compatible
+// (/v1/messages) API formats, auto-detected from the base URL or overridden via APIFormat.
 package extractor
 
 import (
@@ -12,6 +12,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+)
+
+// APIFormat selects which HTTP wire format to use when calling the LLM.
+type APIFormat string
+
+const (
+	FormatOpenAI    APIFormat = "openai"    // POST /chat/completions
+	FormatAnthropic APIFormat = "anthropic" // POST /messages
 )
 
 // Fact represents a single extracted fact from conversation.
@@ -33,16 +41,17 @@ type Extractor struct {
 	baseURL string
 	model   string
 	apiKey  string
+	format  APIFormat
 	client  *http.Client
 }
 
-// openAIMessage is a single message in the OpenAI chat format.
+// --- OpenAI wire types ---
+
 type openAIMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// chatRequest is the OpenAI-compatible chat completion request.
 type chatRequest struct {
 	Model       string          `json:"model"`
 	Messages    []openAIMessage `json:"messages"`
@@ -50,13 +59,33 @@ type chatRequest struct {
 	MaxTokens   int             `json:"max_tokens"`
 }
 
-// chatResponse is the OpenAI-compatible chat completion response.
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+}
+
+// --- Anthropic wire types ---
+
+type anthropicMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type anthropicRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system"`
+	Messages  []anthropicMessage `json:"messages"`
+}
+
+type anthropicResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
 }
 
 // validCategories is the set of valid fact categories.
@@ -71,28 +100,50 @@ var validContainers = map[string]bool{
 	"personal": true, "general": true,
 }
 
-// New creates an Extractor targeting GLM-4.7 via proxy.
+// detectFormat infers API format from base URL if not explicitly set.
+// URLs containing "anthropic" default to Anthropic format; everything else OpenAI.
+func detectFormat(baseURL string) APIFormat {
+	lower := strings.ToLower(baseURL)
+	if strings.Contains(lower, "anthropic") {
+		return FormatAnthropic
+	}
+	return FormatOpenAI
+}
+
+// New creates an Extractor. APIFormat is auto-detected from baseURL.
 func New(baseURL, model, apiKey string) *Extractor {
 	return &Extractor{
 		baseURL: baseURL,
 		model:   model,
 		apiKey:  apiKey,
-		client: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		format:  detectFormat(baseURL),
+		client:  &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
-// Extract sends the last N turns to GLM-4.7 and returns 0-5 structured facts.
-// The prompt instructs the LLM to output a JSON array of facts.
-// Returns empty slice if no extractable facts found.
+// NewWithFormat creates an Extractor with an explicit API format override.
+func NewWithFormat(baseURL, model, apiKey string, format APIFormat) *Extractor {
+	e := New(baseURL, model, apiKey)
+	e.format = format
+	return e
+}
+
+// Extract sends the last N turns to the LLM and returns 0-5 structured facts.
 func (e *Extractor) Extract(ctx context.Context, turns []Turn) ([]Fact, error) {
 	if len(turns) == 0 {
 		return nil, nil
 	}
-
 	userPrompt := BuildExtractionPrompt(turns)
+	switch e.format {
+	case FormatAnthropic:
+		return e.extractAnthropic(ctx, userPrompt)
+	default:
+		return e.extractOpenAI(ctx, userPrompt)
+	}
+}
 
+// extractOpenAI calls POST {baseURL}/chat/completions.
+func (e *Extractor) extractOpenAI(ctx context.Context, userPrompt string) ([]Fact, error) {
 	reqBody := chatRequest{
 		Model: e.model,
 		Messages: []openAIMessage{
@@ -102,79 +153,114 @@ func (e *Extractor) Extract(ctx context.Context, turns []Turn) ([]Fact, error) {
 		Temperature: 0.1,
 		MaxTokens:   512,
 	}
-
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal extractor request: %w", err)
+		return nil, fmt.Errorf("marshal openai request: %w", err)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		e.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create extractor request: %w", err)
+		return nil, fmt.Errorf("create openai request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if e.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	}
+	return e.doRequest(req, e.parseOpenAI)
+}
 
+// extractAnthropic calls POST {baseURL}/messages with Anthropic wire format.
+func (e *Extractor) extractAnthropic(ctx context.Context, userPrompt string) ([]Fact, error) {
+	reqBody := anthropicRequest{
+		Model:     e.model,
+		MaxTokens: 512,
+		System:    extractionSystemPrompt,
+		Messages:  []anthropicMessage{{Role: "user", Content: userPrompt}},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal anthropic request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		e.baseURL+"/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create anthropic request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if e.apiKey != "" {
+		req.Header.Set("x-api-key", e.apiKey)
+	}
+	return e.doRequest(req, e.parseAnthropic)
+}
+
+// doRequest executes an HTTP request and parses the response via the provided parser.
+func (e *Extractor) doRequest(req *http.Request, parse func([]byte) ([]Fact, error)) ([]Fact, error) {
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("extractor request: %w", err)
 	}
 	defer resp.Body.Close()
-
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read extractor response: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("extractor request failed (status %d): %s", resp.StatusCode, respBody)
 	}
+	return parse(respBody)
+}
 
-	var chatResp chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("decode extractor response: %w", err)
+// parseOpenAI extracts the text content from an OpenAI chat completion response.
+func (e *Extractor) parseOpenAI(body []byte) ([]Fact, error) {
+	var r chatResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("decode openai response: %w", err)
 	}
-
-	if len(chatResp.Choices) == 0 {
+	if len(r.Choices) == 0 {
 		return nil, nil
 	}
+	return parseFacts(r.Choices[0].Message.Content)
+}
 
-	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	return parseFacts(content)
+// parseAnthropic extracts the text content from an Anthropic messages response.
+func (e *Extractor) parseAnthropic(body []byte) ([]Fact, error) {
+	var r anthropicResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("decode anthropic response: %w", err)
+	}
+	for _, block := range r.Content {
+		if block.Type == "text" {
+			return parseFacts(block.Text)
+		}
+	}
+	return nil, nil
 }
 
 // parseFacts parses the JSON array of facts from the LLM response.
-// Handles edge cases like markdown code blocks, invalid JSON, etc.
 func parseFacts(content string) ([]Fact, error) {
-	// Strip markdown code blocks if present
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
-
 	if content == "" || content == "[]" {
 		return nil, nil
 	}
-
 	var facts []Fact
 	if err := json.Unmarshal([]byte(content), &facts); err != nil {
 		return nil, fmt.Errorf("parse facts JSON: %w", err)
 	}
-
-	// Validate and cap at 5 facts
 	validated := make([]Fact, 0, len(facts))
 	for _, f := range facts {
 		if f.Content == "" {
 			continue
 		}
-		// Normalize category
 		if !validCategories[f.Category] {
 			f.Category = "general"
 		}
-		// Normalize container
 		if !validContainers[f.Container] {
 			f.Container = "general"
 		}
-		// Clamp importance
 		if f.Importance < 0 {
 			f.Importance = 0
 		}
@@ -186,6 +272,5 @@ func parseFacts(content string) ([]Fact, error) {
 			break
 		}
 	}
-
 	return validated, nil
 }

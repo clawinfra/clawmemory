@@ -47,7 +47,12 @@ func New(cfg *config.Config) (*Server, error) {
 	// Initialize extractor (only if configured)
 	var ext *extractor.Extractor
 	if cfg.Extractor.BaseURL != "" {
-		ext = extractor.New(cfg.Extractor.BaseURL, cfg.Extractor.Model, cfg.Extractor.APIKey)
+		if cfg.Extractor.APIFormat != "" {
+			ext = extractor.NewWithFormat(cfg.Extractor.BaseURL, cfg.Extractor.Model, cfg.Extractor.APIKey,
+				extractor.APIFormat(cfg.Extractor.APIFormat))
+		} else {
+			ext = extractor.New(cfg.Extractor.BaseURL, cfg.Extractor.Model, cfg.Extractor.APIKey)
+		}
 	}
 
 	// Initialize searcher

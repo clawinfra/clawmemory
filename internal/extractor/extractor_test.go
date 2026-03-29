@@ -294,3 +294,78 @@ func TestParseFacts_NormalizeContainer(t *testing.T) {
 		t.Errorf("expected container normalized to general, got %s", facts[0].Container)
 	}
 }
+
+func TestDetectFormat_OpenAI(t *testing.T) {
+	cases := []struct {
+		url    string
+		expect APIFormat
+	}{
+		{"http://localhost:11434/v1", FormatOpenAI},
+		{"https://api.openai.com/v1", FormatOpenAI},
+		{"https://api.z.ai/api/openai/v1", FormatOpenAI},
+		{"https://api.z.ai/api/anthropic", FormatAnthropic},
+		{"https://api.anthropic.com/v1", FormatAnthropic},
+	}
+	for _, c := range cases {
+		got := detectFormat(c.url)
+		if got != c.expect {
+			t.Errorf("detectFormat(%q) = %q, want %q", c.url, got, c.expect)
+		}
+	}
+}
+
+func TestExtractAnthropic_MockServer(t *testing.T) {
+	// Mock Anthropic-format server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("anthropic-version") == "" {
+			t.Error("missing anthropic-version header")
+		}
+		if r.Header.Get("x-api-key") == "" {
+			t.Error("missing x-api-key header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"content": []map[string]string{
+				{"type": "text", "text": `[{"content":"test fact","category":"general","container":"general","importance":0.8}]`},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	ext := NewWithFormat(srv.URL, "glm-4.7", "test-key", FormatAnthropic)
+	facts, err := ext.Extract(context.Background(), []Turn{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(facts) != 1 || facts[0].Content != "test fact" {
+		t.Errorf("unexpected facts: %+v", facts)
+	}
+}
+
+func TestExtractOpenAI_FormatAutoDetect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{"message": map[string]string{"content": `[{"content":"auto fact","category":"technical","container":"work","importance":0.9}]`}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	// No explicit format — auto-detects as OpenAI (no "anthropic" in URL)
+	ext := New(srv.URL, "llama3.2:3b", "ollama")
+	facts, err := ext.Extract(context.Background(), []Turn{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(facts) != 1 || facts[0].Content != "auto fact" {
+		t.Errorf("unexpected facts: %+v", facts)
+	}
+}

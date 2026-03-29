@@ -41,9 +41,10 @@ type EmbeddingConfig struct {
 
 // ExtractorConfig holds LLM fact extraction configuration.
 type ExtractorConfig struct {
-	BaseURL string `json:"base_url"` // GLM-4.7 proxy URL
-	Model   string `json:"model"`    // "glm-4.7"
-	APIKey  string `json:"api_key"`  // proxy API key
+	BaseURL   string `json:"base_url"`   // LLM proxy base URL
+	Model     string `json:"model"`      // e.g. "glm-4.7"
+	APIKey    string `json:"api_key"`    // proxy API key
+	APIFormat string `json:"api_format"` // "openai" (default) or "anthropic" — auto-detected from base_url if empty
 }
 
 // DecayConfig holds importance decay configuration.
