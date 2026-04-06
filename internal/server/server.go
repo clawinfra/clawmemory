@@ -11,7 +11,6 @@ import (
 
 	"github.com/clawinfra/clawmemory/internal/config"
 	"github.com/clawinfra/clawmemory/internal/decay"
-	"github.com/clawinfra/clawmemory/internal/embed"
 	"github.com/clawinfra/clawmemory/internal/extractor"
 	"github.com/clawinfra/clawmemory/internal/profile"
 	"github.com/clawinfra/clawmemory/internal/resolver"
@@ -23,7 +22,6 @@ import (
 type Server struct {
 	httpServer *http.Server
 	store      store.Store
-	embedder   *embed.Client
 	searcher   *search.Searcher
 	extractor  *extractor.Extractor
 	resolver   *resolver.Resolver
@@ -41,9 +39,6 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("init store: %w", err)
 	}
 
-	// Initialize embedder (graceful degradation if Ollama is unavailable)
-	embedder := embed.New(cfg.Embedding.OllamaURL, cfg.Embedding.Model, cfg.Embedding.Dimension)
-
 	// Initialize extractor (only if configured)
 	var ext *extractor.Extractor
 	if cfg.Extractor.BaseURL != "" {
@@ -55,11 +50,11 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 	}
 
-	// Initialize searcher
-	searcher := search.New(st, embedder, 0.4, 0.6)
+	// Initialize BM25-only searcher
+	searcher := search.New(st, nil, 0.4, 0.6)
 
-	// Initialize resolver
-	res := resolver.New(st, searcher, embedder)
+	// Initialize resolver (BM25-based, no embedder)
+	res := resolver.New(st, searcher)
 
 	// Initialize profile builder
 	prof := profile.New(st, ext)
@@ -87,7 +82,6 @@ func New(cfg *config.Config) (*Server, error) {
 
 	srv := &Server{
 		store:     st,
-		embedder:  embedder,
 		searcher:  searcher,
 		extractor: ext,
 		resolver:  res,

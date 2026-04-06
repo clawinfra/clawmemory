@@ -84,9 +84,6 @@ type Store interface {
 	// Search (BM25 via FTS5)
 	SearchFTS(ctx context.Context, query string, limit int) ([]*FactRecord, error)
 
-	// Vector search (facts with embeddings)
-	SearchVector(ctx context.Context, queryEmbedding []float32, limit int, threshold float64) ([]*FactRecord, error)
-
 	// Decay
 	ListDecayable(ctx context.Context, before int64, minImportance float64) ([]*FactRecord, error)
 	PruneFacts(ctx context.Context, ids []string) (int, error)

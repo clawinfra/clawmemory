@@ -54,4 +54,3 @@ export declare class ClawMemoryPlugin {
     isHealthy(): Promise<boolean>;
 }
 export default ClawMemoryPlugin;
-//# sourceMappingURL=index.d.ts.map

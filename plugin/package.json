@@ -1,8 +1,8 @@
 {
-  "name": "@clawinfra/clawmemory-plugin",
-  "version": "0.1.0",
-  "description": "ClawMemory OpenClaw plugin — auto-capture and recall agent memory",
-  "main": "dist/index.js",
+  "name": "@clawinfra/clawmemory",
+  "version": "0.2.0",
+  "description": "ClawMemory OpenClaw plugin \u2014 auto-capture and recall agent memory",
+  "main": "dist/openclaw-plugin.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
@@ -13,6 +13,17 @@
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   },
-  "keywords": ["clawmemory", "openclaw", "agent", "memory"],
-  "license": "MIT"
+  "keywords": [
+    "clawmemory",
+    "openclaw",
+    "agent",
+    "memory"
+  ],
+  "license": "MIT",
+  "openclaw": {
+    "extensions": [
+      "./dist/openclaw-plugin.js"
+    ]
+  },
+  "type": "commonjs"
 }

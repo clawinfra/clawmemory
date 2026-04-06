@@ -87,4 +87,3 @@ export interface PluginConfig {
     recall_limit: number;
     recall_threshold: number;
 }
-//# sourceMappingURL=types.d.ts.map

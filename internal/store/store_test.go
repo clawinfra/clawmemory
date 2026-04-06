@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"testing"
 	"time"
@@ -490,180 +489,6 @@ func TestSearchFTS_Phrase(t *testing.T) {
 	}
 }
 
-func makeEmbedding(dim int, val float32) []float32 {
-	emb := make([]float32, dim)
-	for i := range emb {
-		emb[i] = val
-	}
-	return emb
-}
-
-func TestSearchVector(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	dim := 8
-	// Insert facts with embeddings
-	for i := 0; i < 5; i++ {
-		val := float32(i+1) * 0.1
-		f := &FactRecord{
-			ID:        fmt.Sprintf("vec-%03d", i),
-			Content:   fmt.Sprintf("Vector fact %d", i),
-			Category:  "general",
-			Container: "general",
-			Importance: 0.7,
-			Confidence: 1.0,
-			Embedding: makeEmbedding(dim, val),
-			CreatedAt: time.Now().UnixMilli(),
-			UpdatedAt: time.Now().UnixMilli(),
-		}
-		if err := s.InsertFact(ctx, f); err != nil {
-			t.Fatalf("InsertFact: %v", err)
-		}
-	}
-
-	// Query with embedding closest to vec-004 (val=0.5)
-	query := makeEmbedding(dim, 0.5)
-	results, err := s.SearchVector(ctx, query, 3, 0.0)
-	if err != nil {
-		t.Fatalf("SearchVector: %v", err)
-	}
-	if len(results) == 0 {
-		t.Error("expected vector results")
-	}
-	// Top result should be vec-004 (most similar)
-	if len(results) > 0 && results[0].ID != "vec-004" {
-		t.Logf("top result: %s (cosine sim may vary)", results[0].ID)
-	}
-}
-
-func TestSearchVector_Threshold(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	dim := 8
-	// Insert a fact with embedding pointing in opposite direction
-	f := &FactRecord{
-		ID:        "vec-neg",
-		Content:   "Negative vector fact",
-		Category:  "general",
-		Container: "general",
-		Importance: 0.7,
-		Confidence: 1.0,
-		Embedding: makeEmbedding(dim, -0.5),
-		CreatedAt: time.Now().UnixMilli(),
-		UpdatedAt: time.Now().UnixMilli(),
-	}
-	s.InsertFact(ctx, f)
-
-	query := makeEmbedding(dim, 0.5)
-	results, err := s.SearchVector(ctx, query, 10, 0.9)
-	if err != nil {
-		t.Fatalf("SearchVector: %v", err)
-	}
-	// Negative cosine similarity fact should be filtered
-	for _, r := range results {
-		if r.ID == "vec-neg" {
-			t.Error("low-similarity fact should be filtered by threshold")
-		}
-	}
-}
-
-func TestSearchVector_NullEmbedding(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	f := &FactRecord{
-		ID:        "no-emb",
-		Content:   "Fact without embedding",
-		Category:  "general",
-		Container: "general",
-		Importance: 0.7,
-		Confidence: 1.0,
-		CreatedAt: time.Now().UnixMilli(),
-		UpdatedAt: time.Now().UnixMilli(),
-	}
-	s.InsertFact(ctx, f)
-
-	query := makeEmbedding(8, 0.5)
-	results, err := s.SearchVector(ctx, query, 10, 0.0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range results {
-		if r.ID == "no-emb" {
-			t.Error("fact without embedding should be excluded from vector search")
-		}
-	}
-}
-
-func TestEncodeDecodeEmbedding(t *testing.T) {
-	original := []float32{1.5, -2.3, 0.0, 3.14159, -0.001}
-	encoded := encodeEmbedding(original)
-	decoded := decodeEmbedding(encoded)
-
-	if len(decoded) != len(original) {
-		t.Errorf("length mismatch: got %d, want %d", len(decoded), len(original))
-	}
-	for i := range original {
-		if decoded[i] != original[i] {
-			t.Errorf("value mismatch at %d: got %f, want %f", i, decoded[i], original[i])
-		}
-	}
-}
-
-func TestEncodeEmbedding_Empty(t *testing.T) {
-	if encodeEmbedding(nil) != nil {
-		t.Error("expected nil for nil input")
-	}
-	if decodeEmbedding(nil) != nil {
-		t.Error("expected nil for nil input")
-	}
-}
-
-func TestCosineSimilarity(t *testing.T) {
-	// Known vectors: a=[1,0], b=[1,0] → sim=1.0
-	a := []float32{1, 0}
-	b := []float32{1, 0}
-	sim := cosineSimilarity(a, b)
-	if math.Abs(sim-1.0) > 1e-6 {
-		t.Errorf("identical vectors: expected 1.0, got %f", sim)
-	}
-}
-
-func TestCosineSimilarity_Identical(t *testing.T) {
-	a := []float32{0.1, 0.2, 0.3, 0.4}
-	sim := cosineSimilarity(a, a)
-	if math.Abs(sim-1.0) > 1e-5 {
-		t.Errorf("expected 1.0 for identical vectors, got %f", sim)
-	}
-}
-
-func TestCosineSimilarity_Orthogonal(t *testing.T) {
-	a := []float32{1, 0}
-	b := []float32{0, 1}
-	sim := cosineSimilarity(a, b)
-	if math.Abs(sim) > 1e-6 {
-		t.Errorf("expected 0.0 for orthogonal vectors, got %f", sim)
-	}
-}
-
-func TestCosineSimilarity_EmptySlices(t *testing.T) {
-	sim := cosineSimilarity(nil, nil)
-	if sim != 0 {
-		t.Errorf("expected 0 for empty slices, got %f", sim)
-	}
-}
-
-func TestCosineSimilarity_MismatchedLength(t *testing.T) {
-	a := []float32{1, 2, 3}
-	b := []float32{1, 2}
-	sim := cosineSimilarity(a, b)
-	if sim != 0 {
-		t.Errorf("expected 0 for mismatched lengths, got %f", sim)
-	}
-}
-
 func TestListDecayable(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -867,26 +692,6 @@ func TestUpdateFact_NotFound(t *testing.T) {
 	}
 }
 
-func TestInsertFact_WithEmbedding(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	emb := makeEmbedding(4, 0.7)
-	f := testFact("emb-001")
-	f.Embedding = emb
-	if err := s.InsertFact(ctx, f); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := s.GetFact(ctx, "emb-001")
-	if err != nil || got == nil {
-		t.Fatal(err)
-	}
-	if len(got.Embedding) != 4 {
-		t.Errorf("expected 4-dim embedding, got %d", len(got.Embedding))
-	}
-}
-
 func TestInsertFact_WithExpiry(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -958,26 +763,6 @@ func TestListFacts_IncludeSuperseded(t *testing.T) {
 	}
 	if !found {
 		t.Error("superseded fact should appear with IncludeSuperseded=true")
-	}
-}
-
-func TestUpdateFact_WithEmbedding(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	f := testFact("upd-emb")
-	s.InsertFact(ctx, f)
-
-	// Update with embedding
-	f.Embedding = makeEmbedding(4, 0.3)
-	f.Importance = 0.8
-	if err := s.UpdateFact(ctx, f); err != nil {
-		t.Fatal(err)
-	}
-
-	got, _ := s.GetFact(ctx, "upd-emb")
-	if len(got.Embedding) != 4 {
-		t.Errorf("embedding not updated")
 	}
 }
 
@@ -1113,36 +898,6 @@ func TestSearchFTS_Limit(t *testing.T) {
 	}
 	if len(results) > 2 {
 		t.Errorf("expected at most 2 results, got %d", len(results))
-	}
-}
-
-func TestSearchVector_DefaultLimit(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	emb := makeEmbedding(4, 0.5)
-	for i := 0; i < 3; i++ {
-		f := &FactRecord{
-			ID:         fmt.Sprintf("svd-%d", i),
-			Content:    fmt.Sprintf("Vector test fact %d", i),
-			Category:   "general",
-			Container:  "general",
-			Importance: 0.7,
-			Confidence: 1.0,
-			Embedding:  emb,
-			CreatedAt:  time.Now().UnixMilli(),
-			UpdatedAt:  time.Now().UnixMilli(),
-		}
-		s.InsertFact(ctx, f)
-	}
-
-	// Default limit (0)
-	results, err := s.SearchVector(ctx, makeEmbedding(4, 0.5), 0, 0.0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) == 0 {
-		t.Error("expected results with default limit")
 	}
 }
 

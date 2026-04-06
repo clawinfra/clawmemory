@@ -32,4 +32,3 @@ export declare class RecallHook {
      */
     private formatContextBlock;
 }
-//# sourceMappingURL=recall.d.ts.map

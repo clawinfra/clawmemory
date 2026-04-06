@@ -2,20 +2,14 @@ package resolver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/clawinfra/clawmemory/internal/embed"
 	"github.com/clawinfra/clawmemory/internal/search"
 	"github.com/clawinfra/clawmemory/internal/store"
 )
-
-const testDim = 16
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
@@ -34,48 +28,7 @@ func newTestStore(t *testing.T) store.Store {
 	return s
 }
 
-type mockEmbedState struct {
-	embeddings map[string][]float64
-}
-
-// makeMockEmbedder creates a mock Ollama server that returns predefined embeddings.
-// For any unknown text, returns a default embedding.
-func makeMockEmbedder(t *testing.T, state *mockEmbedState) *embed.Client {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Prompt string `json:"prompt"`
-		}
-		json.NewDecoder(r.Body).Decode(&req)
-
-		var emb []float64
-		if state != nil {
-			if e, ok := state.embeddings[req.Prompt]; ok {
-				emb = e
-			}
-		}
-		if emb == nil {
-			emb = make([]float64, testDim)
-			for i := range emb {
-				emb[i] = 0.1
-			}
-		}
-
-		json.NewEncoder(w).Encode(map[string]interface{}{"embedding": emb})
-	}))
-	t.Cleanup(srv.Close)
-	return embed.New(srv.URL, "test", testDim)
-}
-
-func makeEmbedding(val float32) []float32 {
-	emb := make([]float32, testDim)
-	for i := range emb {
-		emb[i] = val
-	}
-	return emb
-}
-
-func insertFact(t *testing.T, s store.Store, id, content string, emb []float32) *store.FactRecord {
+func insertFact(t *testing.T, s store.Store, id, content string) *store.FactRecord {
 	t.Helper()
 	f := &store.FactRecord{
 		ID:         id,
@@ -84,7 +37,6 @@ func insertFact(t *testing.T, s store.Store, id, content string, emb []float32) 
 		Container:  "personal",
 		Importance: 0.7,
 		Confidence: 1.0,
-		Embedding:  emb,
 		CreatedAt:  time.Now().UnixMilli(),
 		UpdatedAt:  time.Now().UnixMilli(),
 	}
@@ -94,99 +46,46 @@ func insertFact(t *testing.T, s store.Store, id, content string, emb []float32) 
 	return f
 }
 
+func makeSearcher(s store.Store) *search.Searcher {
+	return search.New(s, nil, 0.4, 0.6)
+}
+
 func TestCheck_NoContradiction(t *testing.T) {
 	s := newTestStore(t)
 
-	// Insert a fact pointing in completely different direction
-	insertFact(t, s, "existing-001", "User prefers dark mode",
-		makeEmbedding(-0.5)) // opposite direction
+	// Insert a completely unrelated fact
+	insertFact(t, s, "existing-001", "User prefers dark mode")
 
-	embedder := makeMockEmbedder(t, &mockEmbedState{
-		embeddings: map[string][]float64{
-			"User lives in Sydney": func() []float64 {
-				e := make([]float64, testDim)
-				for i := range e {
-					e[i] = 0.5
-				}
-				return e
-			}(),
-		},
-	})
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	newFact := &store.FactRecord{
-		ID:        "new-001",
-		Content:   "User lives in Sydney",
-		Embedding: makeEmbedding(0.5),
+		ID:      "new-001",
+		Content: "Blockchain is decentralized technology",
 	}
 
-	contradictions, err := resolver.Check(context.Background(), newFact)
+	contradictions, err := res.Check(context.Background(), newFact)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	// Dissimilar facts should not be contradictions
-	// (cosine similarity of opposite vectors is -1, below threshold 0.85)
-	if len(contradictions) > 0 {
-		t.Logf("Got %d contradictions for dissimilar facts (threshold may need adjustment)", len(contradictions))
-	}
-}
-
-func TestCheck_Contradiction(t *testing.T) {
-	s := newTestStore(t)
-
-	// Insert an existing fact with very similar embedding
-	existing := insertFact(t, s, "existing-002", "User lives in Sydney",
-		makeEmbedding(0.999)) // very similar direction
-
-	embedder := makeMockEmbedder(t, &mockEmbedState{
-		embeddings: map[string][]float64{
-			"User has moved to Melbourne": func() []float64 {
-				e := make([]float64, testDim)
-				for i := range e {
-					e[i] = 0.999
-				}
-				return e
-			}(),
-		},
-	})
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	// Lower threshold so our test embedding is above it
-	resolver := NewWithThreshold(s, searcher, embedder, 0.5)
-
-	newFact := &store.FactRecord{
-		ID:        "new-002",
-		Content:   "User has moved to Melbourne",
-		Embedding: makeEmbedding(0.999),
-	}
-	_ = existing
-
-	contradictions, err := resolver.Check(context.Background(), newFact)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	// With same-direction embeddings and low threshold, should detect contradiction
+	// Unrelated fact should not produce contradictions (BM25 won't match)
 	t.Logf("Contradictions found: %d", len(contradictions))
-	// The test validates contradiction detection logic is reachable
 }
 
 func TestCheck_SameFactDuplicate(t *testing.T) {
 	s := newTestStore(t)
 
-	emb := makeEmbedding(0.5)
-	insertFact(t, s, "dup-001", "User prefers dark mode", emb)
+	insertFact(t, s, "dup-001", "User prefers dark mode")
 
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := NewWithThreshold(s, searcher, embedder, 0.1)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	newFact := &store.FactRecord{
-		ID:        "dup-001", // same ID
-		Content:   "User prefers dark mode",
-		Embedding: emb,
+		ID:      "dup-001", // same ID
+		Content: "User prefers dark mode",
 	}
 
-	contradictions, err := resolver.Check(context.Background(), newFact)
+	contradictions, err := res.Check(context.Background(), newFact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,12 +100,11 @@ func TestCheck_SameFactDuplicate(t *testing.T) {
 func TestResolve_Supersede(t *testing.T) {
 	s := newTestStore(t)
 
-	old := insertFact(t, s, "old-001", "User lives in Sydney", makeEmbedding(0.5))
-	new_ := insertFact(t, s, "new-003", "User lives in Melbourne", makeEmbedding(0.5))
+	old := insertFact(t, s, "old-001", "User lives in Sydney")
+	new_ := insertFact(t, s, "new-003", "User lives in Melbourne")
 
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	c := &Contradiction{
 		ExistingFact: old,
@@ -215,7 +113,7 @@ func TestResolve_Supersede(t *testing.T) {
 		Resolution:   "supersede",
 	}
 
-	if err := resolver.Resolve(context.Background(), c); err != nil {
+	if err := res.Resolve(context.Background(), c); err != nil {
 		t.Fatalf("Resolve supersede: %v", err)
 	}
 
@@ -235,12 +133,11 @@ func TestResolve_Supersede(t *testing.T) {
 func TestResolve_Coexist(t *testing.T) {
 	s := newTestStore(t)
 
-	old := insertFact(t, s, "coex-old", "User prefers coffee", makeEmbedding(0.5))
-	newF := insertFact(t, s, "coex-new", "User sometimes drinks tea", makeEmbedding(0.6))
+	old := insertFact(t, s, "coex-old", "User prefers coffee")
+	newF := insertFact(t, s, "coex-new", "User sometimes drinks tea")
 
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	c := &Contradiction{
 		ExistingFact: old,
@@ -249,7 +146,7 @@ func TestResolve_Coexist(t *testing.T) {
 		Resolution:   "coexist",
 	}
 
-	if err := resolver.Resolve(context.Background(), c); err != nil {
+	if err := res.Resolve(context.Background(), c); err != nil {
 		t.Fatalf("Resolve coexist: %v", err)
 	}
 
@@ -266,12 +163,11 @@ func TestResolve_Coexist(t *testing.T) {
 func TestResolve_DiscardNew(t *testing.T) {
 	s := newTestStore(t)
 
-	old := insertFact(t, s, "disc-old", "User likes blue", makeEmbedding(0.5))
-	newF := &store.FactRecord{ID: "disc-new", Content: "User likes blue actually", Embedding: makeEmbedding(0.5)}
+	old := insertFact(t, s, "disc-old", "User likes blue")
+	newF := &store.FactRecord{ID: "disc-new", Content: "User likes blue actually"}
 
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	c := &Contradiction{
 		ExistingFact: old,
@@ -280,7 +176,7 @@ func TestResolve_DiscardNew(t *testing.T) {
 		Resolution:   "discard_new",
 	}
 
-	err := resolver.Resolve(context.Background(), c)
+	err := res.Resolve(context.Background(), c)
 	if err == nil {
 		t.Error("expected error for discard_new resolution")
 	}
@@ -288,36 +184,34 @@ func TestResolve_DiscardNew(t *testing.T) {
 
 func TestResolve_UnknownResolution(t *testing.T) {
 	s := newTestStore(t)
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	c := &Contradiction{
 		ExistingFact: &store.FactRecord{ID: "x"},
 		NewFact:      &store.FactRecord{ID: "y"},
 		Resolution:   "unknown_resolution",
 	}
-	if err := resolver.Resolve(context.Background(), c); err == nil {
+	if err := res.Resolve(context.Background(), c); err == nil {
 		t.Error("expected error for unknown resolution")
 	}
 }
 
-func TestCheck_NilEmbedder(t *testing.T) {
+func TestCheck_NilSearcher(t *testing.T) {
 	s := newTestStore(t)
-	searcher := search.New(s, nil, 0.4, 0.6)
-	resolver := New(s, searcher, nil) // no embedder
+	res := New(s, nil) // no searcher
 
 	newFact := &store.FactRecord{
-		ID:      "nil-emb",
+		ID:      "nil-srch",
 		Content: "test",
 	}
 
-	contradictions, err := resolver.Check(context.Background(), newFact)
+	contradictions, err := res.Check(context.Background(), newFact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if contradictions != nil {
-		t.Error("expected nil contradictions when embedder is nil")
+		t.Error("expected nil contradictions when searcher is nil")
 	}
 }
 
@@ -325,56 +219,40 @@ func TestCheck_SupersededFactIgnored(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	emb := makeEmbedding(0.999)
-
 	// Insert old fact
 	s.InsertFact(ctx, &store.FactRecord{
 		ID:         "sup-old",
-		Content:    "User prefers Python",
+		Content:    "User prefers Python language",
 		Category:   "preference",
 		Container:  "personal",
 		Importance: 0.7,
 		Confidence: 1.0,
-		Embedding:  emb,
 		CreatedAt:  time.Now().UnixMilli(),
 		UpdatedAt:  time.Now().UnixMilli(),
 	})
 	// Insert new fact that supersedes old
 	s.InsertFact(ctx, &store.FactRecord{
 		ID:         "sup-new",
-		Content:    "User prefers Go",
+		Content:    "User prefers Go language",
 		Category:   "preference",
 		Container:  "personal",
 		Importance: 0.7,
 		Confidence: 1.0,
-		Embedding:  emb,
 		CreatedAt:  time.Now().UnixMilli(),
 		UpdatedAt:  time.Now().UnixMilli(),
 	})
 	// Supersede old
 	s.SupersedeFact(ctx, "sup-old", "sup-new")
 
-	embedder := makeMockEmbedder(t, &mockEmbedState{
-		embeddings: map[string][]float64{
-			"User now prefers Rust": func() []float64 {
-				e := make([]float64, testDim)
-				for i := range e {
-					e[i] = 0.999
-				}
-				return e
-			}(),
-		},
-	})
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := NewWithThreshold(s, searcher, embedder, 0.5)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	newFact := &store.FactRecord{
-		ID:        "sup-newer",
-		Content:   "User now prefers Rust",
-		Embedding: makeEmbedding(0.999),
+		ID:      "sup-newer",
+		Content: "User now prefers Rust language",
 	}
 
-	contradictions, err := resolver.Check(ctx, newFact)
+	contradictions, err := res.Check(ctx, newFact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,85 +264,17 @@ func TestCheck_SupersededFactIgnored(t *testing.T) {
 	}
 }
 
-func TestComputeSimilarity_Identical(t *testing.T) {
-	a := makeEmbedding(0.5)
-	sim := computeSimilarity(a, a)
-	if abs(sim-1.0) > 1e-5 {
-		t.Errorf("identical vectors should have similarity ~1.0, got %f", sim)
-	}
-}
-
-func TestComputeSimilarity_Empty(t *testing.T) {
-	sim := computeSimilarity(nil, nil)
-	if sim != 0 {
-		t.Errorf("expected 0 for empty vectors, got %f", sim)
-	}
-}
-
-func TestComputeSimilarity_MismatchedLength(t *testing.T) {
-	a := []float32{1, 2, 3}
-	b := []float32{1, 2}
-	sim := computeSimilarity(a, b)
-	if sim != 0 {
-		t.Errorf("expected 0 for mismatched lengths, got %f", sim)
-	}
-}
-
-func TestComputeSimilarity_ZeroNorm(t *testing.T) {
-	// Zero vector — norm is 0, should return 0
-	a := []float32{0, 0, 0}
-	b := []float32{1, 2, 3}
-	sim := computeSimilarity(a, b)
-	if sim != 0 {
-		t.Errorf("expected 0 for zero vector, got %f", sim)
-	}
-}
-
-func TestSqrt64(t *testing.T) {
-	tests := []struct {
-		x    float64
-		want float64
-	}{
-		{0, 0},
-		{-1, 0},
-		{4, 2},
-		{9, 3},
-		{2, 1.41421356},
-	}
-	for _, tt := range tests {
-		got := sqrt64(tt.x)
-		if abs(got-tt.want) > 0.001 {
-			t.Errorf("sqrt64(%f) = %f, want %f", tt.x, got, tt.want)
-		}
-	}
-}
-
-func TestNewWithThreshold(t *testing.T) {
-	s := newTestStore(t)
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	res := NewWithThreshold(s, searcher, embedder, 0.75)
-	if res == nil {
-		t.Fatal("expected non-nil resolver")
-	}
-	if res.contradictionThreshold != 0.75 {
-		t.Errorf("expected threshold 0.75, got %f", res.contradictionThreshold)
-	}
-}
-
 func TestCheck_EmptyStore(t *testing.T) {
 	s := newTestStore(t)
-	embedder := makeMockEmbedder(t, nil)
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := New(s, searcher, embedder)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	newFact := &store.FactRecord{
-		ID:        "empty-store",
-		Content:   "Test fact",
-		Embedding: makeEmbedding(0.5),
+		ID:      "empty-store",
+		Content: "Test fact",
 	}
 
-	contradictions, err := resolver.Check(context.Background(), newFact)
+	contradictions, err := res.Check(context.Background(), newFact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,57 +283,44 @@ func TestCheck_EmptyStore(t *testing.T) {
 	}
 }
 
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
+func TestNewWithThreshold(t *testing.T) {
+	s := newTestStore(t)
+	searcher := makeSearcher(s)
+	res := NewWithThreshold(s, searcher, 0.75)
+	if res == nil {
+		t.Fatal("expected non-nil resolver")
 	}
-	return x
+	if res.contradictionThreshold != 0.75 {
+		t.Errorf("expected threshold 0.75, got %f", res.contradictionThreshold)
+	}
 }
 
-// Unused import protection
-var _ = fmt.Sprintf
-
-// TestCheck_ExactDuplicateContent verifies exact content duplicates are skipped.
 func TestCheck_ExactDuplicateContent(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	emb := makeEmbedding(0.999)
 	// Insert a fact with identical content
 	s.InsertFact(ctx, &store.FactRecord{
 		ID:         "dup-content-old",
-		Content:    "User prefers dark mode",
+		Content:    "User prefers dark mode interface settings",
 		Category:   "preference",
 		Container:  "personal",
 		Importance: 0.7,
 		Confidence: 1.0,
-		Embedding:  emb,
 		CreatedAt:  1000,
 		UpdatedAt:  1000,
 	})
 
-	embedder := makeMockEmbedder(t, &mockEmbedState{
-		embeddings: map[string][]float64{
-			"User prefers dark mode": func() []float64 {
-				e := make([]float64, testDim)
-				for i := range e {
-					e[i] = 0.999
-				}
-				return e
-			}(),
-		},
-	})
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	resolver := NewWithThreshold(s, searcher, embedder, 0.1)
+	searcher := makeSearcher(s)
+	res := New(s, searcher)
 
 	// New fact with same content but different ID
 	newFact := &store.FactRecord{
-		ID:        "dup-content-new",
-		Content:   "User prefers dark mode", // exact duplicate content
-		Embedding: emb,
+		ID:      "dup-content-new",
+		Content: "User prefers dark mode interface settings", // exact duplicate content
 	}
 
-	contradictions, err := resolver.Check(ctx, newFact)
+	contradictions, err := res.Check(ctx, newFact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,68 +332,5 @@ func TestCheck_ExactDuplicateContent(t *testing.T) {
 	}
 }
 
-// TestCheck_LowSimilarityBranch verifies that sim < threshold sets sim to threshold.
-func TestCheck_SimBelowThreshold(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	// Insert a fact — embedding will be returned by search as above threshold
-	// but new fact has empty embedding, so computeSimilarity returns 0 < threshold
-	s.InsertFact(ctx, &store.FactRecord{
-		ID:         "simlow-old",
-		Content:    "User prefers Python",
-		Category:   "preference",
-		Container:  "personal",
-		Importance: 0.7,
-		Confidence: 1.0,
-		Embedding:  makeEmbedding(0.9),
-		CreatedAt:  1000,
-		UpdatedAt:  1000,
-	})
-
-	embedder := makeMockEmbedder(t, &mockEmbedState{
-		embeddings: map[string][]float64{
-			"User likes coding": func() []float64 {
-				e := make([]float64, testDim)
-				for i := range e {
-					e[i] = 0.9
-				}
-				return e
-			}(),
-		},
-	})
-	searcher := search.New(s, embedder, 0.4, 0.6)
-	// Very low threshold to ensure the search returns our fact
-	resolver := NewWithThreshold(s, searcher, embedder, 0.1)
-
-	// New fact with nil embedding → computeSimilarity will return 0 < threshold
-	newFact := &store.FactRecord{
-		ID:        "simlow-new",
-		Content:   "User likes coding",
-		Embedding: nil, // empty → sim = 0, triggers `sim = r.contradictionThreshold`
-	}
-
-	contradictions, err := resolver.Check(ctx, newFact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// If a contradiction is found, verify its similarity is set to at least the threshold
-	for _, c := range contradictions {
-		if c.Similarity < 0.1 {
-			t.Errorf("expected similarity >= threshold (0.1), got %f", c.Similarity)
-		}
-	}
-}
-
-// TestComputeSimilarity_OppositeVectors ensures opposite vectors return negative similarity.
-func TestComputeSimilarity_OppositeVectors(t *testing.T) {
-	a := makeEmbedding(1.0)
-	b := make([]float32, testDim)
-	for i := range b {
-		b[i] = -1.0
-	}
-	sim := computeSimilarity(a, b)
-	if sim >= 0 {
-		t.Errorf("opposite vectors should have negative similarity, got %f", sim)
-	}
-}
+// Unused import protection
+var _ = fmt.Sprintf

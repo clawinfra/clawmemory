@@ -53,4 +53,3 @@ export declare class ClawMemoryClient {
     private post;
     private request;
 }
-//# sourceMappingURL=client.d.ts.map

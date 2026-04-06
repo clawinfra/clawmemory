@@ -15,7 +15,6 @@ import (
 type Config struct {
 	Server    ServerConfig    `json:"server"`
 	Store     StoreConfig     `json:"store"`
-	Embedding EmbeddingConfig `json:"embedding"`
 	Extractor ExtractorConfig `json:"extractor"`
 	Decay     DecayConfig     `json:"decay"`
 	Turso     TursoConfig     `json:"turso"`
@@ -30,13 +29,6 @@ type ServerConfig struct {
 // StoreConfig holds SQLite store configuration.
 type StoreConfig struct {
 	DBPath string `json:"db_path"` // default "~/.clawmemory/memory.db"
-}
-
-// EmbeddingConfig holds Ollama embedding configuration.
-type EmbeddingConfig struct {
-	OllamaURL string `json:"ollama_url"` // default "http://10.0.0.44:11434"
-	Model     string `json:"model"`      // default "qwen2.5:7b"
-	Dimension int    `json:"dimension"`  // default 3584
 }
 
 // ExtractorConfig holds LLM fact extraction configuration.
@@ -76,11 +68,6 @@ func Default() *Config {
 		},
 		Store: StoreConfig{
 			DBPath: dbPath,
-		},
-		Embedding: EmbeddingConfig{
-			OllamaURL: "http://10.0.0.44:11434",
-			Model:     "qwen2.5:7b",
-			Dimension: 3584,
 		},
 		Extractor: ExtractorConfig{
 			Model: "glm-4.7",
@@ -140,12 +127,6 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("CLAWMEMORY_DB_PATH"); v != "" {
 		cfg.Store.DBPath = v
 	}
-	if v := os.Getenv("OLLAMA_URL"); v != "" {
-		cfg.Embedding.OllamaURL = v
-	}
-	if v := os.Getenv("OLLAMA_MODEL"); v != "" {
-		cfg.Embedding.Model = v
-	}
 	if v := os.Getenv("EXTRACTOR_BASE_URL"); v != "" {
 		cfg.Extractor.BaseURL = v
 	}
@@ -170,9 +151,6 @@ func validate(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Server.Host) == "" {
 		return fmt.Errorf("server.host must not be empty")
-	}
-	if cfg.Embedding.Dimension <= 0 {
-		return fmt.Errorf("embedding.dimension must be positive, got %d", cfg.Embedding.Dimension)
 	}
 	if cfg.Decay.HalfLifeDays <= 0 {
 		return fmt.Errorf("decay.half_life_days must be positive, got %f", cfg.Decay.HalfLifeDays)

@@ -44,4 +44,3 @@ export declare class ClawMemoryTools {
     /** Parse /recall args. */
     private parseRecallArgs;
 }
-//# sourceMappingURL=tools.d.ts.map

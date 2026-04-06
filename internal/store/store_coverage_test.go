@@ -201,17 +201,6 @@ func TestSearchFTS_ClosedDB(t *testing.T) {
 	})
 }
 
-// ─── SearchVector error path ──────────────────────────────────────────────────
-
-func TestSearchVector_ClosedDB(t *testing.T) {
-	withClosedStore(t, func(s *SQLiteStore) {
-		_, err := s.SearchVector(context.Background(), makeEmbedding(4, 0.1), 5, 0.0)
-		if err == nil {
-			t.Error("expected error from SearchVector on closed DB")
-		}
-	})
-}
-
 // ─── ListDecayable error path ─────────────────────────────────────────────────
 
 func TestListDecayable_ClosedDB(t *testing.T) {
@@ -376,17 +365,6 @@ func TestScanFact_ScanError(t *testing.T) {
 		t.Logf("GetFact empty id: %v (acceptable)", err)
 	} else if got != nil {
 		t.Logf("GetFact empty id returned %v (acceptable)", got.ID)
-	}
-}
-
-// ─── cosineSimilarity zero-norm edge case ─────────────────────────────────────
-
-func TestCosineSimilarity_ZeroNorm(t *testing.T) {
-	a := []float32{0, 0, 0}
-	b := []float32{1, 2, 3}
-	sim := cosineSimilarity(a, b)
-	if sim != 0 {
-		t.Errorf("expected 0 for zero-norm vector, got %f", sim)
 	}
 }
 
@@ -606,40 +584,6 @@ func TestRunMigrations_ClosedDB(t *testing.T) {
 	err = RunMigrations(db)
 	if err == nil {
 		t.Error("expected error from RunMigrations on closed DB")
-	}
-}
-
-// ─── SearchVector fact with no embedding in store ────────────────────────────
-
-func TestSearchVector_SkipsNoEmbedding(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	// Insert fact without embedding (it won't appear in SearchVector results)
-	f := testFact("no-emb")
-	f.Embedding = nil
-	s.InsertFact(ctx, f)
-
-	// Insert fact WITH embedding
-	f2 := testFact("with-emb")
-	f2.Embedding = makeEmbedding(4, 0.5)
-	s.InsertFact(ctx, f2)
-
-	query := makeEmbedding(4, 0.5)
-	results, err := s.SearchVector(ctx, query, 10, 0.0)
-	if err != nil {
-		t.Fatalf("SearchVector: %v", err)
-	}
-	// The fact without embedding stored as NULL is excluded by SQL WHERE clause
-	// The fact with embedding should appear
-	found := false
-	for _, r := range results {
-		if r.ID == "with-emb" {
-			found = true
-		}
-	}
-	if !found {
-		t.Log("with-emb fact not returned — may be threshold issue, OK for coverage")
 	}
 }
 

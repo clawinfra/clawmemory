@@ -16,15 +16,6 @@ func TestDefault(t *testing.T) {
 	if cfg.Server.Host != "127.0.0.1" {
 		t.Errorf("expected default host 127.0.0.1, got %s", cfg.Server.Host)
 	}
-	if cfg.Embedding.OllamaURL != "http://10.0.0.44:11434" {
-		t.Errorf("expected default Ollama URL, got %s", cfg.Embedding.OllamaURL)
-	}
-	if cfg.Embedding.Model != "qwen2.5:7b" {
-		t.Errorf("expected default model qwen2.5:7b, got %s", cfg.Embedding.Model)
-	}
-	if cfg.Embedding.Dimension != 3584 {
-		t.Errorf("expected dimension 3584, got %d", cfg.Embedding.Dimension)
-	}
 	if cfg.Decay.HalfLifeDays != 30 {
 		t.Errorf("expected half life 30, got %f", cfg.Decay.HalfLifeDays)
 	}
@@ -51,11 +42,6 @@ func TestLoadFromFile(t *testing.T) {
 			"host": "0.0.0.0",
 			"port": 8080,
 		},
-		"embedding": map[string]interface{}{
-			"ollama_url": "http://localhost:11434",
-			"model":      "nomic-embed-text",
-			"dimension":  768,
-		},
 	}
 
 	b, _ := json.Marshal(data)
@@ -73,15 +59,6 @@ func TestLoadFromFile(t *testing.T) {
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("expected port 8080, got %d", cfg.Server.Port)
-	}
-	if cfg.Embedding.OllamaURL != "http://localhost:11434" {
-		t.Errorf("expected custom ollama URL, got %s", cfg.Embedding.OllamaURL)
-	}
-	if cfg.Embedding.Model != "nomic-embed-text" {
-		t.Errorf("expected custom model, got %s", cfg.Embedding.Model)
-	}
-	if cfg.Embedding.Dimension != 768 {
-		t.Errorf("expected dimension 768, got %d", cfg.Embedding.Dimension)
 	}
 	// Other fields should use defaults
 	if cfg.Decay.HalfLifeDays != 30 {
@@ -181,11 +158,6 @@ func TestValidation(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "invalid embedding dimension",
-			mutate:  func(c *Config) { c.Embedding.Dimension = 0 },
-			wantErr: true,
-		},
-		{
 			name:    "invalid half life days",
 			mutate:  func(c *Config) { c.Decay.HalfLifeDays = -1 },
 			wantErr: true,
@@ -240,7 +212,7 @@ func TestEnvOverrides_AllFields(t *testing.T) {
 	savedVars := map[string]string{}
 	envVars := []string{
 		"CLAWMEMORY_HOST", "CLAWMEMORY_PORT", "CLAWMEMORY_DB_PATH",
-		"OLLAMA_URL", "OLLAMA_MODEL", "EXTRACTOR_BASE_URL",
+		"EXTRACTOR_BASE_URL",
 		"EXTRACTOR_API_KEY", "EXTRACTOR_MODEL", "TURSO_URL", "TURSO_AUTH_TOKEN",
 	}
 	for _, k := range envVars {
@@ -255,8 +227,6 @@ func TestEnvOverrides_AllFields(t *testing.T) {
 	os.Setenv("CLAWMEMORY_HOST", "10.0.0.1")
 	os.Setenv("CLAWMEMORY_PORT", "8888")
 	os.Setenv("CLAWMEMORY_DB_PATH", "/tmp/test.db")
-	os.Setenv("OLLAMA_URL", "http://localhost:11434")
-	os.Setenv("OLLAMA_MODEL", "llama2")
 	os.Setenv("EXTRACTOR_BASE_URL", "http://proxy:8080")
 	os.Setenv("EXTRACTOR_API_KEY", "secret")
 	os.Setenv("EXTRACTOR_MODEL", "gpt-4")
@@ -276,12 +246,6 @@ func TestEnvOverrides_AllFields(t *testing.T) {
 	}
 	if cfg.Store.DBPath != "/tmp/test.db" {
 		t.Errorf("expected /tmp/test.db, got %s", cfg.Store.DBPath)
-	}
-	if cfg.Embedding.OllamaURL != "http://localhost:11434" {
-		t.Errorf("expected ollama URL, got %s", cfg.Embedding.OllamaURL)
-	}
-	if cfg.Embedding.Model != "llama2" {
-		t.Errorf("expected llama2, got %s", cfg.Embedding.Model)
 	}
 	if cfg.Extractor.BaseURL != "http://proxy:8080" {
 		t.Errorf("expected extractor URL, got %s", cfg.Extractor.BaseURL)

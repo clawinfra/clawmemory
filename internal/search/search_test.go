@@ -2,15 +2,11 @@ package search
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/clawinfra/clawmemory/internal/embed"
 	"github.com/clawinfra/clawmemory/internal/store"
 )
 
@@ -34,19 +30,6 @@ func newTestStore(t *testing.T) store.Store {
 		os.Remove(path)
 	})
 	return s
-}
-
-func makeMockEmbedder(t *testing.T, dim int) *embed.Client {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		emb := make([]float64, dim)
-		for i := range emb {
-			emb[i] = 0.1
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"embedding": emb})
-	}))
-	t.Cleanup(srv.Close)
-	return embed.New(srv.URL, "test", dim)
 }
 
 func seedFacts(t *testing.T, s store.Store, contents []string) {
@@ -79,8 +62,8 @@ func TestHybridSearch(t *testing.T) {
 		"Coffee over tea",
 	})
 
-	embedder := makeMockEmbedder(t, 8)
-	searcher := New(s, embedder, 0.4, 0.6)
+	// BM25-only searcher (no embedder)
+	searcher := New(s, nil, 0.4, 0.6)
 
 	results, err := searcher.Search(context.Background(), "User", SearchOpts{Limit: 5})
 	if err != nil {
@@ -99,7 +82,6 @@ func TestHybridSearch_BM25Only(t *testing.T) {
 		"Golang is a systems language",
 	})
 
-	// No embedder (nil) — should fall back to BM25 only
 	searcher := New(s, nil, 0.4, 0.6)
 
 	results, err := searcher.Search(context.Background(), "dark mode", SearchOpts{Limit: 5})
@@ -175,42 +157,6 @@ func TestHybridSearch_EmptyStore(t *testing.T) {
 	}
 }
 
-func TestRRF(t *testing.T) {
-	// Test RRF math: score = w/(k+rank)
-	// bm25W=0.4, vecW=0.6, k=60
-	// fact in bm25 rank 1, vec rank 1: score = 0.4/61 + 0.6/61 ≈ 0.01639
-	bm25 := []*store.FactRecord{
-		{ID: "a", Content: "fact a", Category: "general", Container: "general", Importance: 0.7},
-		{ID: "b", Content: "fact b", Category: "general", Container: "general", Importance: 0.7},
-	}
-	vec := []*store.FactRecord{
-		{ID: "a", Content: "fact a", Category: "general", Container: "general", Importance: 0.7},
-		{ID: "c", Content: "fact c", Category: "general", Container: "general", Importance: 0.7},
-	}
-
-	results := reciprocalRankFusion(bm25, vec, 0.4, 0.6)
-
-	if len(results) == 0 {
-		t.Fatal("expected results from RRF")
-	}
-	// "a" appears in both → should have highest score
-	if results[0].FactID != "a" {
-		t.Errorf("expected 'a' (in both lists) to rank first, got %s", results[0].FactID)
-	}
-	// Score of "a" should be bm25W/61 + vecW/61
-	expectedScore := 0.4/61.0 + 0.6/61.0
-	if abs(results[0].Score-expectedScore) > 1e-10 {
-		t.Errorf("RRF score mismatch: got %f, want %f", results[0].Score, expectedScore)
-	}
-}
-
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 func TestBM25Search_Ranking(t *testing.T) {
 	s := newTestStore(t)
 	seedFacts(t, s, []string{
@@ -273,9 +219,6 @@ func TestNewSearcher_DefaultWeights(t *testing.T) {
 	if searcher.bm25Weight != 0.4 {
 		t.Errorf("expected default bm25Weight 0.4, got %f", searcher.bm25Weight)
 	}
-	if searcher.vecWeight != 0.6 {
-		t.Errorf("expected default vecWeight 0.6, got %f", searcher.vecWeight)
-	}
 }
 
 func TestNewBM25(t *testing.T) {
@@ -292,101 +235,6 @@ func TestNewBM25(t *testing.T) {
 	if len(results) != 0 {
 		t.Errorf("expected 0 results, got %d", len(results))
 	}
-}
-
-func TestNewVector(t *testing.T) {
-	s := newTestStore(t)
-	embedder := makeMockEmbedder(t, 8)
-	v := NewVector(s, embedder)
-	if v == nil {
-		t.Error("expected non-nil vector searcher")
-	}
-}
-
-func TestVectorSearch_Ranking(t *testing.T) {
-	dim := 8
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		emb := make([]float64, dim)
-		for i := range emb {
-			emb[i] = 0.5
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"embedding": emb})
-	}))
-	defer srv.Close()
-
-	embedder := embed.New(srv.URL, "test", dim)
-	s := newTestStore(t)
-
-	// Insert facts with different embeddings
-	ctx := context.Background()
-	embHigh := make([]float32, dim)
-	embLow := make([]float32, dim)
-	for i := range embHigh {
-		embHigh[i] = 0.5 // similar to query
-		embLow[i] = -0.5 // dissimilar to query
-	}
-
-	s.InsertFact(ctx, &store.FactRecord{
-		ID: "high", Content: "High similarity fact", Category: "general", Container: "general",
-		Importance: 0.7, Confidence: 1.0, Embedding: embHigh,
-		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
-	})
-	s.InsertFact(ctx, &store.FactRecord{
-		ID: "low", Content: "Low similarity fact", Category: "general", Container: "general",
-		Importance: 0.7, Confidence: 1.0, Embedding: embLow,
-		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
-	})
-
-	v := NewVector(s, embedder)
-	results, err := v.Search(ctx, "test query", 5, 0.0)
-	if err != nil {
-		t.Fatalf("VectorSearch: %v", err)
-	}
-
-	if len(results) == 0 {
-		t.Error("expected vector search results")
-	}
-	// "high" should rank first
-	if len(results) > 0 && results[0].FactID != "high" {
-		t.Logf("Note: expected 'high' to rank first, got %s", results[0].FactID)
-	}
-}
-
-func TestVectorSearch_EmbedError(t *testing.T) {
-	// Server that always returns 500 — embed.Embed will fail
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "fail", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	embedder := embed.New(srv.URL, "test", 8)
-	s := newTestStore(t)
-	v := NewVector(s, embedder)
-
-	_, err := v.Search(context.Background(), "query", 5, 0.0)
-	if err == nil {
-		t.Error("expected error when embed fails")
-	}
-}
-
-func TestVectorSearch_DefaultLimit(t *testing.T) {
-	dim := 8
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		emb := make([]float64, dim)
-		json.NewEncoder(w).Encode(map[string]interface{}{"embedding": emb})
-	}))
-	defer srv.Close()
-
-	embedder := embed.New(srv.URL, "test", dim)
-	s := newTestStore(t)
-	v := NewVector(s, embedder)
-
-	// limit=0 should default to 10, not error
-	results, err := v.Search(context.Background(), "query", 0, 0.0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	_ = results // empty store, just checking no panic
 }
 
 func TestBM25Search_StoreError(t *testing.T) {
@@ -418,20 +266,4 @@ func TestBM25Search_DefaultLimit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	_ = results
-}
-
-func TestHybridSearch_VectorError(t *testing.T) {
-	// Embedder pointing at dead server — vector arm fails gracefully, BM25 still works
-	embedder := embed.New("http://127.0.0.1:1", "test", 8)
-	s := newTestStore(t)
-	seedFacts(t, s, []string{"hello world", "foo bar"})
-
-	searcher := New(s, embedder, 0.5, 0.5)
-	ctx := context.Background()
-	// BM25 should still return results even if vector arm errors
-	results, err := searcher.Search(ctx, "hello", SearchOpts{Limit: 5})
-	// Some implementations return partial results; others propagate error.
-	// Either way, should not panic.
-	_ = results
-	_ = err
 }

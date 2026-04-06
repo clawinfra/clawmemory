@@ -1,6 +1,6 @@
 {
   "name": "clawmemory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sovereign agent memory engine — auto-capture facts from conversations and recall them on demand",
   "author": "ClawInfra",
   "main": "dist/index.js",

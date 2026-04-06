@@ -21,4 +21,3 @@ export declare class CaptureHook {
      */
     onPostTurn(sessionId: string, turns: Turn[]): Promise<number>;
 }
-//# sourceMappingURL=capture.d.ts.map

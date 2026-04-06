@@ -1,26 +1,24 @@
-// Package search provides hybrid BM25 + vector search for ClawMemory facts.
-// It combines keyword-based FTS5 search with semantic vector similarity using
-// Reciprocal Rank Fusion (RRF) to produce ranked results.
+// Package search provides BM25 full-text search for ClawMemory facts.
+// It uses SQLite FTS5 for keyword-based search with ranking.
 package search
 
 import (
 	"context"
 	"sort"
 
-	"github.com/clawinfra/clawmemory/internal/embed"
 	"github.com/clawinfra/clawmemory/internal/store"
 )
 
 // Result is a single search result with relevance score.
 type Result struct {
-	FactID    string  `json:"fact_id"`
-	Content   string  `json:"content"`
-	Category  string  `json:"category"`
-	Container string  `json:"container"`
+	FactID     string  `json:"fact_id"`
+	Content    string  `json:"content"`
+	Category   string  `json:"category"`
+	Container  string  `json:"container"`
 	Importance float64 `json:"importance"`
-	Score     float64 `json:"score"`      // combined relevance score (0.0-1.0)
-	BM25Score float64 `json:"bm25_score"` // keyword match score
-	VecScore  float64 `json:"vec_score"`  // semantic similarity score
+	Score      float64 `json:"score"`      // combined relevance score (0.0-1.0)
+	BM25Score  float64 `json:"bm25_score"` // keyword match score
+	VecScore   float64 `json:"vec_score"`  // kept for API compatibility (always 0)
 }
 
 // SearchOpts configures a search query.
@@ -30,46 +28,37 @@ type SearchOpts struct {
 	Threshold float64 // minimum score threshold (default 0.0)
 }
 
-// Searcher combines BM25 and vector search with reciprocal rank fusion.
+// Searcher performs BM25 search via SQLite FTS5.
 type Searcher struct {
 	store      store.Store
-	embedder   *embed.Client
 	bm25Weight float64 // default 0.4
-	vecWeight  float64 // default 0.6
 }
 
-// New creates a hybrid Searcher.
-func New(s store.Store, embedder *embed.Client, bm25Weight, vecWeight float64) *Searcher {
+// New creates a BM25 Searcher. The embedder and vecWeight parameters are ignored
+// and kept for backward-compatible call sites during migration.
+func New(s store.Store, _ interface{}, bm25Weight, _ float64) *Searcher {
 	if bm25Weight <= 0 {
 		bm25Weight = 0.4
 	}
-	if vecWeight <= 0 {
-		vecWeight = 0.6
-	}
 	return &Searcher{
 		store:      s,
-		embedder:   embedder,
 		bm25Weight: bm25Weight,
-		vecWeight:  vecWeight,
 	}
 }
 
-// Search performs hybrid BM25 + vector search, fuses results with RRF, returns top-k.
+// Search performs BM25 full-text search via SQLite FTS5, returns top-k results.
 // Steps:
 //  1. Run BM25 search via store.SearchFTS (SQLite FTS5)
-//  2. Compute query embedding via embedder (if available)
-//  3. Run vector search via store.SearchVector (brute-force cosine)
-//  4. Reciprocal Rank Fusion: score_i = bm25Weight/(k+rank_bm25) + vecWeight/(k+rank_vec), k=60
-//  5. Sort by fused score descending
-//  6. Return top limit results
+//  2. Filter by container if specified
+//  3. Score via RRF-style ranking
+//  4. Filter by threshold
+//  5. Return top limit results
 func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 10
 	}
 
-	// Fetch more results from each source to fuse well.
-	// When container filtering is requested, we need a larger candidate pool
-	// since we filter AFTER RRF fusion (store-level queries don't filter by container).
+	// Fetch more results to filter well.
 	fetchLimit := opts.Limit * 3
 	if fetchLimit < 20 {
 		fetchLimit = 20
@@ -82,35 +71,22 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 		}
 	}
 
-	// 1. BM25 search
+	// BM25 search
 	bm25Facts, err := s.store.SearchFTS(ctx, query, fetchLimit)
 	if err != nil {
 		// FTS may fail on special chars — fallback gracefully
 		bm25Facts = nil
 	}
 
-	// 2. Vector search (best-effort — may not be available if Ollama is down)
-	var vecFacts []*store.FactRecord
-	if s.embedder != nil {
-		emb, embErr := s.embedder.Embed(ctx, query)
-		if embErr == nil {
-			vecFacts, _ = s.store.SearchVector(ctx, emb, fetchLimit, 0.0)
-		}
-		// If embedder fails, gracefully degrade to BM25-only
-	}
-
-	// 2.5. Pre-filter by container BEFORE RRF fusion.
-	// This ensures RRF ranks are computed within the container scope,
-	// preventing cross-container facts from dominating the rankings.
+	// Filter by container
 	if opts.Container != "" {
 		bm25Facts = filterFactsByContainer(bm25Facts, opts.Container)
-		vecFacts = filterFactsByContainer(vecFacts, opts.Container)
 	}
 
-	// 3. Reciprocal Rank Fusion
-	results := reciprocalRankFusion(bm25Facts, vecFacts, s.bm25Weight, s.vecWeight)
+	// Score using RRF-style ranking
+	results := rankBM25(bm25Facts, s.bm25Weight)
 
-	// 5. Filter by threshold
+	// Filter by threshold
 	if opts.Threshold > 0 {
 		filtered := results[:0]
 		for _, r := range results {
@@ -121,7 +97,7 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 		results = filtered
 	}
 
-	// 6. Return top-k
+	// Return top-k
 	if len(results) > opts.Limit {
 		results = results[:opts.Limit]
 	}
@@ -129,69 +105,39 @@ func (s *Searcher) Search(ctx context.Context, query string, opts SearchOpts) ([
 	return results, nil
 }
 
-// reciprocalRankFusion combines BM25 and vector results using RRF.
-// k=60 is the standard RRF constant.
-func reciprocalRankFusion(bm25Facts, vecFacts []*store.FactRecord, bm25W, vecW float64) []Result {
+// rankBM25 converts a slice of BM25-ordered facts into scored Results.
+func rankBM25(facts []*store.FactRecord, bm25W float64) []Result {
 	const k = 60.0
 
-	// Build rank maps: factID -> rank (1-indexed)
-	bm25Ranks := make(map[string]int, len(bm25Facts))
-	for i, f := range bm25Facts {
-		bm25Ranks[f.ID] = i + 1
-	}
-
-	vecRanks := make(map[string]int, len(vecFacts))
-	for i, f := range vecFacts {
-		vecRanks[f.ID] = i + 1
-	}
-
-	// Build combined fact map
-	allFacts := make(map[string]*store.FactRecord, len(bm25Facts)+len(vecFacts))
-	for _, f := range bm25Facts {
-		allFacts[f.ID] = f
-	}
-	for _, f := range vecFacts {
-		allFacts[f.ID] = f
-	}
-
-	// Compute fused scores
 	type scored struct {
 		id        string
 		score     float64
 		bm25Score float64
-		vecScore  float64
 	}
 
-	scores := make(map[string]*scored, len(allFacts))
-	for id := range allFacts {
-		sc := &scored{id: id}
-
-		bm25Rank, hasBM25 := bm25Ranks[id]
-		vecRank, hasVec := vecRanks[id]
-
-		if hasBM25 {
-			sc.bm25Score = bm25W / (k + float64(bm25Rank))
-		}
-		if hasVec {
-			sc.vecScore = vecW / (k + float64(vecRank))
-		}
-		sc.score = sc.bm25Score + sc.vecScore
-		scores[id] = sc
+	scores := make([]scored, len(facts))
+	for i, f := range facts {
+		bm25Score := bm25W / (k + float64(i+1))
+		scores[i] = scored{id: f.ID, score: bm25Score, bm25Score: bm25Score}
 	}
 
-	// Sort by score descending
-	sortedScores := make([]*scored, 0, len(scores))
-	for _, sc := range scores {
-		sortedScores = append(sortedScores, sc)
-	}
-	sort.Slice(sortedScores, func(i, j int) bool {
-		return sortedScores[i].score > sortedScores[j].score
+	// Sort by score descending (already sorted by FTS5, but keep for consistency)
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
 	})
 
-	// Build result slice
-	results := make([]Result, 0, len(sortedScores))
-	for _, sc := range sortedScores {
-		f := allFacts[sc.id]
+	// Build fact map for lookup
+	factMap := make(map[string]*store.FactRecord, len(facts))
+	for _, f := range facts {
+		factMap[f.ID] = f
+	}
+
+	results := make([]Result, 0, len(scores))
+	for _, sc := range scores {
+		f, ok := factMap[sc.id]
+		if !ok {
+			continue
+		}
 		results = append(results, Result{
 			FactID:    f.ID,
 			Content:   f.Content,
@@ -200,7 +146,7 @@ func reciprocalRankFusion(bm25Facts, vecFacts []*store.FactRecord, bm25W, vecW f
 			Importance: f.Importance,
 			Score:     sc.score,
 			BM25Score: sc.bm25Score,
-			VecScore:  sc.vecScore,
+			VecScore:  0,
 		})
 	}
 	return results
@@ -221,7 +167,6 @@ func filterFactsByContainer(facts []*store.FactRecord, container string) []*stor
 }
 
 // BM25Only searches using only BM25 (keyword) search.
-// Used as fallback when vector search is unavailable.
 func (s *Searcher) BM25Only(ctx context.Context, query string, opts SearchOpts) ([]Result, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 10

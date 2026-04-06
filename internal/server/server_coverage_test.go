@@ -39,7 +39,6 @@ type mockStore struct {
 	listProfileErr     error
 	deleteProfileErr   error
 	searchFTSErr       error
-	searchVectorErr    error
 	listDecayableErr   error
 	pruneFactsErr      error
 	lastSyncErr        error
@@ -51,7 +50,6 @@ type mockStore struct {
 	listProfileResult  []*store.ProfileEntry
 	getProfileResult   *store.ProfileEntry
 	searchFTSResult    []*store.FactRecord
-	searchVectorResult []*store.FactRecord
 	unprocessedTurns   []*store.TurnRecord
 	lastSyncResult     int64
 }
@@ -97,9 +95,6 @@ func (m *mockStore) DeleteProfile(ctx context.Context, key string) error {
 }
 func (m *mockStore) SearchFTS(ctx context.Context, query string, limit int) ([]*store.FactRecord, error) {
 	return m.searchFTSResult, m.searchFTSErr
-}
-func (m *mockStore) SearchVector(ctx context.Context, embedding []float32, limit int, threshold float64) ([]*store.FactRecord, error) {
-	return m.searchVectorResult, m.searchVectorErr
 }
 func (m *mockStore) ListDecayable(ctx context.Context, before int64, minImportance float64) ([]*store.FactRecord, error) {
 	return nil, m.listDecayableErr
@@ -367,7 +362,6 @@ func TestNew_BadDBPath(t *testing.T) {
 func TestNew_ValidConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Store.DBPath = t.TempDir() + "/test.db"
-	cfg.Embedding.OllamaURL = "http://127.0.0.1:19999"
 	cfg.Extractor.BaseURL = ""
 	cfg.Turso.AuthToken = "" // no Turso
 
@@ -491,8 +485,7 @@ func TestServer_Start_WithDecayAndTurso(t *testing.T) {
 
 func TestRecall_SearchStoreFail(t *testing.T) {
 	m := &mockStore{
-		searchFTSErr:    fmt.Errorf("fts broken"),
-		searchVectorErr: fmt.Errorf("vector broken"),
+		searchFTSErr: fmt.Errorf("fts broken"),
 	}
 	_, httpSrv := newServerWithMock(t, m)
 

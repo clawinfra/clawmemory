@@ -59,19 +59,8 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	return &SQLiteStore{db: db, path: dbPath}, nil
 }
 
-// encodeEmbedding converts []float32 to []byte (little-endian float32 array).
-func encodeEmbedding(emb []float32) []byte {
-	if len(emb) == 0 {
-		return nil
-	}
-	buf := make([]byte, len(emb)*4)
-	for i, v := range emb {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
-	}
-	return buf
-}
-
 // decodeEmbedding converts []byte back to []float32.
+// Retained for backward compat reading of legacy embedding blobs.
 func decodeEmbedding(data []byte) []float32 {
 	if len(data) == 0 {
 		return nil
@@ -85,27 +74,8 @@ func decodeEmbedding(data []byte) []float32 {
 	return result
 }
 
-// cosineSimilarity computes cosine similarity between two float32 slices.
-// Returns 0 if either slice is empty or their norms are zero.
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		av := float64(a[i])
-		bv := float64(b[i])
-		dot += av * bv
-		normA += av * av
-		normB += bv * bv
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
-}
-
 // InsertFact inserts a new fact record into the database.
+// The embedding column is retained in the schema for backward compat but never written.
 func (s *SQLiteStore) InsertFact(ctx context.Context, fact *FactRecord) error {
 	var expiresAt interface{}
 	if fact.ExpiresAt != nil {
@@ -114,10 +84,6 @@ func (s *SQLiteStore) InsertFact(ctx context.Context, fact *FactRecord) error {
 	var supersededBy interface{}
 	if fact.SupersededBy != nil {
 		supersededBy = *fact.SupersededBy
-	}
-	var embBlob interface{}
-	if len(fact.Embedding) > 0 {
-		embBlob = encodeEmbedding(fact.Embedding)
 	}
 
 	now := time.Now().UnixMilli()
@@ -130,11 +96,11 @@ func (s *SQLiteStore) InsertFact(ctx context.Context, fact *FactRecord) error {
 
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO facts (id, content, category, container, importance, confidence, source, created_at, updated_at, expires_at, superseded_by, embedding, deleted)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
 		fact.ID, fact.Content, fact.Category, fact.Container,
 		fact.Importance, fact.Confidence, fact.Source,
 		fact.CreatedAt, fact.UpdatedAt, expiresAt, supersededBy,
-		embBlob, boolToInt(fact.Deleted),
+		boolToInt(fact.Deleted),
 	)
 	if err != nil {
 		return fmt.Errorf("insert fact: %w", err)
@@ -152,6 +118,7 @@ func (s *SQLiteStore) GetFact(ctx context.Context, id string) (*FactRecord, erro
 }
 
 // UpdateFact updates an existing fact record.
+// The embedding column is retained in the schema for backward compat but never written.
 func (s *SQLiteStore) UpdateFact(ctx context.Context, fact *FactRecord) error {
 	fact.UpdatedAt = time.Now().UnixMilli()
 
@@ -163,17 +130,13 @@ func (s *SQLiteStore) UpdateFact(ctx context.Context, fact *FactRecord) error {
 	if fact.SupersededBy != nil {
 		supersededBy = *fact.SupersededBy
 	}
-	var embBlob interface{}
-	if len(fact.Embedding) > 0 {
-		embBlob = encodeEmbedding(fact.Embedding)
-	}
 
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE facts SET content=?, category=?, container=?, importance=?, confidence=?,
-		        source=?, updated_at=?, expires_at=?, superseded_by=?, embedding=?, deleted=?
+		        source=?, updated_at=?, expires_at=?, superseded_by=?, deleted=?
 		 WHERE id=?`,
 		fact.Content, fact.Category, fact.Container, fact.Importance, fact.Confidence,
-		fact.Source, fact.UpdatedAt, expiresAt, supersededBy, embBlob,
+		fact.Source, fact.UpdatedAt, expiresAt, supersededBy,
 		boolToInt(fact.Deleted), fact.ID,
 	)
 	if err != nil {
@@ -417,65 +380,6 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([
 	}
 
 	return results, nil
-}
-
-// SearchVector performs brute-force cosine similarity search over stored embeddings.
-// Returns facts sorted by cosine similarity descending, filtered by threshold.
-func (s *SQLiteStore) SearchVector(ctx context.Context, queryEmbedding []float32, limit int, threshold float64) ([]*FactRecord, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-
-	// Load all facts with embeddings (active, non-superseded)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, content, category, container, importance, confidence, source,
-		        created_at, updated_at, expires_at, superseded_by, embedding, deleted
-		 FROM facts
-		 WHERE embedding IS NOT NULL AND deleted=0 AND superseded_by IS NULL`)
-	if err != nil {
-		return nil, fmt.Errorf("vector search load facts: %w", err)
-	}
-	defer rows.Close()
-
-	allFacts, err := scanFacts(rows)
-	if err != nil {
-		return nil, err
-	}
-
-	// Compute cosine similarity for all facts
-	type scoredFact struct {
-		fact  *FactRecord
-		score float64
-	}
-
-	var scored []scoredFact
-	for _, f := range allFacts {
-		if len(f.Embedding) == 0 {
-			continue
-		}
-		sim := cosineSimilarity(queryEmbedding, f.Embedding)
-		if sim >= threshold {
-			scored = append(scored, scoredFact{fact: f, score: sim})
-		}
-	}
-
-	// Sort by score descending (insertion sort)
-	for i := 1; i < len(scored); i++ {
-		for j := i; j > 0 && scored[j].score > scored[j-1].score; j-- {
-			scored[j], scored[j-1] = scored[j-1], scored[j]
-		}
-	}
-
-	// Return top-k
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-
-	result := make([]*FactRecord, len(scored))
-	for i, sf := range scored {
-		result[i] = sf.fact
-	}
-	return result, nil
 }
 
 // ListDecayable returns facts that may need importance decay processing.

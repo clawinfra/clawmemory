@@ -1,0 +1,26 @@
+{
+  "id": "clawmemory",
+  "name": "ClawMemory",
+  "version": "0.2.0",
+  "description": "Sovereign agent memory — auto-capture facts, hybrid BM25+vector recall, 100% local",
+  "kind": "hook",
+  "main": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "server_url": {"type": "string"},
+      "auto_capture": {"type": "boolean"},
+      "auto_recall": {"type": "boolean"},
+      "recall_limit": {"type": "number"},
+      "recall_threshold": {"type": "number"}
+    }
+  },
+  "config": {
+    "server_url": "http://127.0.0.1:7437",
+    "auto_capture": true,
+    "auto_recall": true,
+    "recall_limit": 5,
+    "recall_threshold": 0.1
+  }
+}

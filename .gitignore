@@ -4,3 +4,4 @@
 *.db-shm
 dist/
 node_modules/
+clawmemory

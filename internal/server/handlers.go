@@ -55,7 +55,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":         "ok",
-		"version":        "0.1.0",
+		"version":        "0.2.0",
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
 		"store": map[string]interface{}{
 			"active_facts": stats.ActiveFacts,
@@ -151,14 +151,6 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			Source:     req.SessionID,
 			CreatedAt:  now,
 			UpdatedAt:  now,
-		}
-
-		// Generate embedding if available
-		if s.embedder != nil {
-			emb, embErr := s.embedder.Embed(ctx, f.Content)
-			if embErr == nil {
-				factRecord.Embedding = emb
-			}
 		}
 
 		// Check for contradictions
@@ -260,14 +252,6 @@ func (s *Server) handleRemember(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		ExpiresAt:  req.ExpiresAt,
-	}
-
-	// Generate embedding
-	if s.embedder != nil {
-		emb, err := s.embedder.Embed(ctx, req.Content)
-		if err == nil {
-			fact.Embedding = emb
-		}
 	}
 
 	// Check contradictions
@@ -463,7 +447,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"unprocessed_turns":  stats.UnprocessedTurns,
 		"profile_entries":    stats.ProfileEntries,
 		"db_size_bytes":      stats.DBSizeBytes,
-		"embedding_dimension": 3584,
+		"embedding_dimension": 0,
 		"last_sync_at":       lastSync,
 	})
 }
