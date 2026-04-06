@@ -41,6 +41,8 @@ func run() error {
 		return runServe(args)
 	case "stats":
 		return runStats(args)
+	case "ingest":
+		return runIngest(args)
 	case "version":
 		fmt.Printf("clawmemory %s\n", version)
 		return nil
@@ -142,6 +144,7 @@ Usage:
 Subcommands:
   serve   Start the HTTP server (default)
   stats   Print store statistics from a running server
+  ingest  Ingest a markdown file or URL into memory
   version Print version
 
 Examples:
@@ -149,6 +152,8 @@ Examples:
   clawmemory serve --config ~/.clawmemory/config.json
   clawmemory serve --port 7438
   clawmemory stats --server http://127.0.0.1:7437
+  clawmemory ingest --source README.md --agent my-agent
+  clawmemory ingest --source https://example.com/doc.md --agent my-agent --dry-run
 
 `, version)
 }
