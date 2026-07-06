@@ -8,7 +8,7 @@
 
 ClawMemory is a self-hosted memory system for AI agents. All data stays in infrastructure you control — local SQLite with optional Turso cloud sync.
 
-Inspired by [Karpathy's LLM Knowledge Base](https://github.com/AlexChen31337/llm-knowledge-base) methodology: no RAG, no vector DB. The LLM reads, extracts, and organises — search is pure BM25 full-text via SQLite FTS5.
+Inspired by [AlexChen31337's LLM Knowledge Base](https://github.com/AlexChen31337/llm-knowledge-base) (an implementation of Andrej Karpathy's original concept): no RAG, no vector DB. The LLM reads, extracts, and organises — search is pure BM25 full-text via SQLite FTS5.
 
 **Key capabilities:**
 - **Automatic fact extraction** — LLM-based extraction of facts, preferences, and personal details from conversations
