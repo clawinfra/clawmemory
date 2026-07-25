@@ -1,5 +1,11 @@
 name: Weekly Benchmarks
 
+permissions:
+  contents: read
+  packages: read
+  pull-requests: write
+  issues: write
+
 on:
   schedule:
     - cron: '0 2 * * 0'  # Every Sunday at 2am UTC
